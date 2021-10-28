@@ -1,5 +1,12 @@
 {
     "scripts": {
-        "bundle": "node_modules/.bin/rollup src/editor.js -f iife -o src/editor.bundle.js -p @rollup/plugin-node-resolve"
+        "build": "node_modules/.bin/rollup src/editor.js -f iife -o src/editor.bundle.js -p @rollup/plugin-node-resolve; lezer-generator src/lang.grammar -o src/lang.js"
+    },
+    "dependencies": {
+        "@codemirror/basic-setup": "^0.19.0",
+        "@lezer/generator": "^0.15.2",
+        "@lezer/lr": "^0.15.4",
+        "@rollup/plugin-node-resolve": "^13.0.6",
+        "rollup": "^2.58.3"
     }
-} 
+}

@@ -8706,7 +8706,7 @@
         return new BlockInfo(block.from, block.length, bTop, bBottom - bTop, Array.isArray(block.type) ? block.type.map(b => scaleBlock(b, scaler, top)) : block.type);
     }
 
-    const theme = /*@__PURE__*/Facet.define({ combine: strs => strs.join(" ") });
+    const theme$1 = /*@__PURE__*/Facet.define({ combine: strs => strs.join(" ") });
     const darkTheme = /*@__PURE__*/Facet.define({ combine: values => values.indexOf(true) > -1 });
     const baseThemeID = /*@__PURE__*/StyleModule.newName(), baseLightID = /*@__PURE__*/StyleModule.newName(), baseDarkID = /*@__PURE__*/StyleModule.newName();
     const lightDarkIDs = { "&light": "." + baseLightID, "&dark": "." + baseDarkID };
@@ -9730,7 +9730,7 @@
         get themeClasses() {
             return baseThemeID + " " +
                 (this.state.facet(darkTheme) ? baseDarkID : baseLightID) + " " +
-                this.state.facet(theme);
+                this.state.facet(theme$1);
         }
         updateAttrs() {
             let editorAttrs = combineAttrs(this.state.facet(editorAttributes), {
@@ -10091,7 +10091,7 @@
         */
         static theme(spec, options) {
             let prefix = StyleModule.newName();
-            let result = [theme.of(prefix), styleModule.of(buildTheme(`.${prefix}`, spec))];
+            let result = [theme$1.of(prefix), styleModule.of(buildTheme(`.${prefix}`, spec))];
             if (options && options.dark)
                 result.push(darkTheme.of(true));
             return result;
@@ -19504,26 +19504,20 @@
         ])
     ];
 
-    let editor = new EditorView({
+    var theme = EditorView.theme({
+      ".cm-content": {
+          fontSize: "1.5em",
+          fontWeight: "500",
+          fontFamily: "'Oswald'",
+          color: "black"
+      }
+    });
+
+    new EditorView({
       state: EditorState.create({
-        extensions: [basicSetup]
+        extensions: [basicSetup, theme]
       }),
       parent: document.getElementById("editor")
     });
-
-    editor.theme({
-        "&": {
-            backgroundColor: "white",
-            fontSize: "16px",
-            fontFamily: "serif",
-            color: "pink"
-        },
-        ".cm-content": {
-            backgroundColor: "white",
-            fontSize: "16px",
-            fontFamily: "serif",
-            color: "pink"
-        }
-    }, {dark: true});
 
 })();
