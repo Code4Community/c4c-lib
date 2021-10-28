@@ -11,6 +11,7 @@ Many Code 4 Community Modules need a solution to create a simple custom programm
 - [Lezer](https://lezer.codemirror.net/)
 - [CodeMirror 6 Bundling](https://codemirror.net/6/examples/bundle/)
 - [CodeMirror 6 Styling](https://codemirror.net/6/examples/styling/)
+- [Connecting Lezer to CodeMirror](https://github.com/codemirror/lang-example)
 ### Helpful Commands
 - Bundling editor.js: `npm run bundle`
 

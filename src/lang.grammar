@@ -1,10 +1,20 @@
-@top Program { expression }
+@top Program { expression* }
 
-expression { Name | Number | BinaryExpression }
+@skip { space | Comment }
 
-BinaryExpression { "(" expression ("+" | "-") expression ")" }
+expression { Statement | IfExpression | TimesExpression}
 
-@tokens {
-  Name { std.asciiLetter+ }
+IfExpression { "if" Condition expression ("elif" Condition expression "end")* ("else" Condition expression "end")+ "end" }
+
+TimesExpression { (Number|"forever") "times" expression "end" }
+
+
+@tokens { 
+  Condition { "true"|"false" }
+  Statement { "move"|"jump" }
   Number { std.digit+ }
+  space { std.whitespace+ }
+  Comment { "//" ![\n]* }
 }
+
+@detectDelim

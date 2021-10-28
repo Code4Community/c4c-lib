@@ -1,3 +1,4 @@
+import {parser} from "./lang.grammar"
 import {EditorState, EditorView, basicSetup} from "@codemirror/basic-setup"
 
 var theme = EditorView.theme({
@@ -15,3 +16,5 @@ let editor = new EditorView({
   }),
   parent: document.getElementById("editor")
 })
+
+console.log(parser)

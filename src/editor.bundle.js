@@ -1,6 +1,2770 @@
 (function () {
     'use strict';
 
+    // FIXME profile adding a per-Tree TreeNode cache, validating it by
+    // parent pointer
+    /// The default maximum length of a `TreeBuffer` node (1024).
+    const DefaultBufferLength = 1024;
+    let nextPropID = 0;
+    class Range$1 {
+        constructor(from, to) {
+            this.from = from;
+            this.to = to;
+        }
+    }
+    /// Each [node type](#common.NodeType) or [individual tree](#common.Tree)
+    /// can have metadata associated with it in props. Instances of this
+    /// class represent prop names.
+    class NodeProp {
+        /// Create a new node prop type.
+        constructor(config = {}) {
+            this.id = nextPropID++;
+            this.perNode = !!config.perNode;
+            this.deserialize = config.deserialize || (() => {
+                throw new Error("This node type doesn't define a deserialize function");
+            });
+        }
+        /// This is meant to be used with
+        /// [`NodeSet.extend`](#common.NodeSet.extend) or
+        /// [`LRParser.configure`](#lr.ParserConfig.props) to compute
+        /// prop values for each node type in the set. Takes a [match
+        /// object](#common.NodeType^match) or function that returns undefined
+        /// if the node type doesn't get this prop, and the prop's value if
+        /// it does.
+        add(match) {
+            if (this.perNode)
+                throw new RangeError("Can't add per-node props to node types");
+            if (typeof match != "function")
+                match = NodeType.match(match);
+            return (type) => {
+                let result = match(type);
+                return result === undefined ? null : [this, result];
+            };
+        }
+    }
+    /// Prop that is used to describe matching delimiters. For opening
+    /// delimiters, this holds an array of node names (written as a
+    /// space-separated string when declaring this prop in a grammar)
+    /// for the node types of closing delimiters that match it.
+    NodeProp.closedBy = new NodeProp({ deserialize: str => str.split(" ") });
+    /// The inverse of [`closedBy`](#common.NodeProp^closedBy). This is
+    /// attached to closing delimiters, holding an array of node names
+    /// of types of matching opening delimiters.
+    NodeProp.openedBy = new NodeProp({ deserialize: str => str.split(" ") });
+    /// Used to assign node types to groups (for example, all node
+    /// types that represent an expression could be tagged with an
+    /// `"Expression"` group).
+    NodeProp.group = new NodeProp({ deserialize: str => str.split(" ") });
+    /// The hash of the [context](#lr.ContextTracker.constructor)
+    /// that the node was parsed in, if any. Used to limit reuse of
+    /// contextual nodes.
+    NodeProp.contextHash = new NodeProp({ perNode: true });
+    /// The distance beyond the end of the node that the tokenizer
+    /// looked ahead for any of the tokens inside the node. (The LR
+    /// parser only stores this when it is larger than 25, for
+    /// efficiency reasons.)
+    NodeProp.lookAhead = new NodeProp({ perNode: true });
+    /// This per-node prop is used to replace a given node, or part of a
+    /// node, with another tree. This is useful to include trees from
+    /// different languages.
+    NodeProp.mounted = new NodeProp({ perNode: true });
+    const noProps = Object.create(null);
+    /// Each node in a syntax tree has a node type associated with it.
+    class NodeType {
+        /// @internal
+        constructor(
+        /// The name of the node type. Not necessarily unique, but if the
+        /// grammar was written properly, different node types with the
+        /// same name within a node set should play the same semantic
+        /// role.
+        name, 
+        /// @internal
+        props, 
+        /// The id of this node in its set. Corresponds to the term ids
+        /// used in the parser.
+        id, 
+        /// @internal
+        flags = 0) {
+            this.name = name;
+            this.props = props;
+            this.id = id;
+            this.flags = flags;
+        }
+        static define(spec) {
+            let props = spec.props && spec.props.length ? Object.create(null) : noProps;
+            let flags = (spec.top ? 1 /* Top */ : 0) | (spec.skipped ? 2 /* Skipped */ : 0) |
+                (spec.error ? 4 /* Error */ : 0) | (spec.name == null ? 8 /* Anonymous */ : 0);
+            let type = new NodeType(spec.name || "", props, spec.id, flags);
+            if (spec.props)
+                for (let src of spec.props) {
+                    if (!Array.isArray(src))
+                        src = src(type);
+                    if (src) {
+                        if (src[0].perNode)
+                            throw new RangeError("Can't store a per-node prop on a node type");
+                        props[src[0].id] = src[1];
+                    }
+                }
+            return type;
+        }
+        /// Retrieves a node prop for this type. Will return `undefined` if
+        /// the prop isn't present on this node.
+        prop(prop) { return this.props[prop.id]; }
+        /// True when this is the top node of a grammar.
+        get isTop() { return (this.flags & 1 /* Top */) > 0; }
+        /// True when this node is produced by a skip rule.
+        get isSkipped() { return (this.flags & 2 /* Skipped */) > 0; }
+        /// Indicates whether this is an error node.
+        get isError() { return (this.flags & 4 /* Error */) > 0; }
+        /// When true, this node type doesn't correspond to a user-declared
+        /// named node, for example because it is used to cache repetition.
+        get isAnonymous() { return (this.flags & 8 /* Anonymous */) > 0; }
+        /// Returns true when this node's name or one of its
+        /// [groups](#common.NodeProp^group) matches the given string.
+        is(name) {
+            if (typeof name == 'string') {
+                if (this.name == name)
+                    return true;
+                let group = this.prop(NodeProp.group);
+                return group ? group.indexOf(name) > -1 : false;
+            }
+            return this.id == name;
+        }
+        /// Create a function from node types to arbitrary values by
+        /// specifying an object whose property names are node or
+        /// [group](#common.NodeProp^group) names. Often useful with
+        /// [`NodeProp.add`](#common.NodeProp.add). You can put multiple
+        /// names, separated by spaces, in a single property name to map
+        /// multiple node names to a single value.
+        static match(map) {
+            let direct = Object.create(null);
+            for (let prop in map)
+                for (let name of prop.split(" "))
+                    direct[name] = map[prop];
+            return (node) => {
+                for (let groups = node.prop(NodeProp.group), i = -1; i < (groups ? groups.length : 0); i++) {
+                    let found = direct[i < 0 ? node.name : groups[i]];
+                    if (found)
+                        return found;
+                }
+            };
+        }
+    }
+    /// An empty dummy node type to use when no actual type is available.
+    NodeType.none = new NodeType("", Object.create(null), 0, 8 /* Anonymous */);
+    /// A node set holds a collection of node types. It is used to
+    /// compactly represent trees by storing their type ids, rather than a
+    /// full pointer to the type object, in a numeric array. Each parser
+    /// [has](#lr.LRParser.nodeSet) a node set, and [tree
+    /// buffers](#common.TreeBuffer) can only store collections of nodes
+    /// from the same set. A set can have a maximum of 2**16 (65536) node
+    /// types in it, so that the ids fit into 16-bit typed array slots.
+    class NodeSet {
+        /// Create a set with the given types. The `id` property of each
+        /// type should correspond to its position within the array.
+        constructor(
+        /// The node types in this set, by id.
+        types) {
+            this.types = types;
+            for (let i = 0; i < types.length; i++)
+                if (types[i].id != i)
+                    throw new RangeError("Node type ids should correspond to array positions when creating a node set");
+        }
+        /// Create a copy of this set with some node properties added. The
+        /// arguments to this method should be created with
+        /// [`NodeProp.add`](#common.NodeProp.add).
+        extend(...props) {
+            let newTypes = [];
+            for (let type of this.types) {
+                let newProps = null;
+                for (let source of props) {
+                    let add = source(type);
+                    if (add) {
+                        if (!newProps)
+                            newProps = Object.assign({}, type.props);
+                        newProps[add[0].id] = add[1];
+                    }
+                }
+                newTypes.push(newProps ? new NodeType(type.name, newProps, type.id, type.flags) : type);
+            }
+            return new NodeSet(newTypes);
+        }
+    }
+    const CachedNode = new WeakMap();
+    /// A piece of syntax tree. There are two ways to approach these
+    /// trees: the way they are actually stored in memory, and the
+    /// convenient way.
+    ///
+    /// Syntax trees are stored as a tree of `Tree` and `TreeBuffer`
+    /// objects. By packing detail information into `TreeBuffer` leaf
+    /// nodes, the representation is made a lot more memory-efficient.
+    ///
+    /// However, when you want to actually work with tree nodes, this
+    /// representation is very awkward, so most client code will want to
+    /// use the [`TreeCursor`](#common.TreeCursor) or
+    /// [`SyntaxNode`](#common.SyntaxNode) interface instead, which provides
+    /// a view on some part of this data structure, and can be used to
+    /// move around to adjacent nodes.
+    class Tree {
+        /// Construct a new tree. See also [`Tree.build`](#common.Tree^build).
+        constructor(
+        /// The type of the top node.
+        type, 
+        /// This node's child nodes.
+        children, 
+        /// The positions (offsets relative to the start of this tree) of
+        /// the children.
+        positions, 
+        /// The total length of this tree
+        length, 
+        /// Per-node [node props](#common.NodeProp) to associate with this node.
+        props) {
+            this.type = type;
+            this.children = children;
+            this.positions = positions;
+            this.length = length;
+            /// @internal
+            this.props = null;
+            if (props && props.length) {
+                this.props = Object.create(null);
+                for (let [prop, value] of props)
+                    this.props[typeof prop == "number" ? prop : prop.id] = value;
+            }
+        }
+        /// @internal
+        toString() {
+            let mounted = this.prop(NodeProp.mounted);
+            if (mounted && !mounted.overlay)
+                return mounted.tree.toString();
+            let children = "";
+            for (let ch of this.children) {
+                let str = ch.toString();
+                if (str) {
+                    if (children)
+                        children += ",";
+                    children += str;
+                }
+            }
+            return !this.type.name ? children :
+                (/\W/.test(this.type.name) && !this.type.isError ? JSON.stringify(this.type.name) : this.type.name) +
+                    (children.length ? "(" + children + ")" : "");
+        }
+        /// Get a [tree cursor](#common.TreeCursor) rooted at this tree. When
+        /// `pos` is given, the cursor is [moved](#common.TreeCursor.moveTo)
+        /// to the given position and side.
+        cursor(pos, side = 0) {
+            let scope = (pos != null && CachedNode.get(this)) || this.topNode;
+            let cursor = new TreeCursor(scope);
+            if (pos != null) {
+                cursor.moveTo(pos, side);
+                CachedNode.set(this, cursor._tree);
+            }
+            return cursor;
+        }
+        /// Get a [tree cursor](#common.TreeCursor) that, unlike regular
+        /// cursors, doesn't skip through
+        /// [anonymous](#common.NodeType.isAnonymous) nodes.
+        fullCursor() {
+            return new TreeCursor(this.topNode, 1 /* Full */);
+        }
+        /// Get a [syntax node](#common.SyntaxNode) object for the top of the
+        /// tree.
+        get topNode() {
+            return new TreeNode(this, 0, 0, null);
+        }
+        /// Get the [syntax node](#common.SyntaxNode) at the given position.
+        /// If `side` is -1, this will move into nodes that end at the
+        /// position. If 1, it'll move into nodes that start at the
+        /// position. With 0, it'll only enter nodes that cover the position
+        /// from both sides.
+        resolve(pos, side = 0) {
+            return this.cursor(pos, side).node;
+        }
+        /// Like [`resolve`](#common.Tree.resolve), but will enter
+        /// [overlaid](#common.MountedTree.overlay) nodes, producing a syntax node
+        /// pointing into the innermost overlaid tree at the given position
+        /// (with parent links going through all parent structure, including
+        /// the host trees).
+        resolveInner(pos, side = 0) {
+            let result = this.topNode;
+            for (;;) {
+                let inner = result.enter(pos, side);
+                if (!inner)
+                    return result;
+                result = inner;
+            }
+        }
+        /// Iterate over the tree and its children, calling `enter` for any
+        /// node that touches the `from`/`to` region (if given) before
+        /// running over such a node's children, and `leave` (if given) when
+        /// leaving the node. When `enter` returns `false`, that node will
+        /// not have its children iterated over (or `leave` called).
+        iterate(spec) {
+            let { enter, leave, from = 0, to = this.length } = spec;
+            for (let c = this.cursor(), get = () => c.node;;) {
+                let mustLeave = false;
+                if (c.from <= to && c.to >= from && (c.type.isAnonymous || enter(c.type, c.from, c.to, get) !== false)) {
+                    if (c.firstChild())
+                        continue;
+                    if (!c.type.isAnonymous)
+                        mustLeave = true;
+                }
+                for (;;) {
+                    if (mustLeave && leave)
+                        leave(c.type, c.from, c.to, get);
+                    mustLeave = c.type.isAnonymous;
+                    if (c.nextSibling())
+                        break;
+                    if (!c.parent())
+                        return;
+                    mustLeave = true;
+                }
+            }
+        }
+        /// Get the value of the given [node prop](#common.NodeProp) for this
+        /// node. Works with both per-node and per-type props.
+        prop(prop) {
+            return !prop.perNode ? this.type.prop(prop) : this.props ? this.props[prop.id] : undefined;
+        }
+        /// Returns the node's [per-node props](#common.NodeProp.perNode) in a
+        /// format that can be passed to the [`Tree`](#common.Tree)
+        /// constructor.
+        get propValues() {
+            let result = [];
+            if (this.props)
+                for (let id in this.props)
+                    result.push([+id, this.props[id]]);
+            return result;
+        }
+        /// Balance the direct children of this tree, producing a copy of
+        /// which may have children grouped into subtrees with type
+        /// [`NodeType.none`](#common.NodeType^none).
+        balance(config = {}) {
+            return this.children.length <= 8 /* BranchFactor */ ? this :
+                balanceRange(this.type, this.children, this.positions, 0, this.children.length, 0, this.length, (children, positions, length) => new Tree(this.type, children, positions, length, this.propValues), config.makeTree || ((children, positions, length) => new Tree(NodeType.none, children, positions, length)));
+        }
+        /// Build a tree from a postfix-ordered buffer of node information,
+        /// or a cursor over such a buffer.
+        static build(data) { return buildTree(data); }
+    }
+    /// The empty tree
+    Tree.empty = new Tree(NodeType.none, [], [], 0);
+    class FlatBufferCursor {
+        constructor(buffer, index) {
+            this.buffer = buffer;
+            this.index = index;
+        }
+        get id() { return this.buffer[this.index - 4]; }
+        get start() { return this.buffer[this.index - 3]; }
+        get end() { return this.buffer[this.index - 2]; }
+        get size() { return this.buffer[this.index - 1]; }
+        get pos() { return this.index; }
+        next() { this.index -= 4; }
+        fork() { return new FlatBufferCursor(this.buffer, this.index); }
+    }
+    /// Tree buffers contain (type, start, end, endIndex) quads for each
+    /// node. In such a buffer, nodes are stored in prefix order (parents
+    /// before children, with the endIndex of the parent indicating which
+    /// children belong to it)
+    class TreeBuffer {
+        /// Create a tree buffer.
+        constructor(
+        /// The buffer's content.
+        buffer, 
+        /// The total length of the group of nodes in the buffer.
+        length, 
+        /// The node set used in this buffer.
+        set) {
+            this.buffer = buffer;
+            this.length = length;
+            this.set = set;
+        }
+        /// @internal
+        get type() { return NodeType.none; }
+        /// @internal
+        toString() {
+            let result = [];
+            for (let index = 0; index < this.buffer.length;) {
+                result.push(this.childString(index));
+                index = this.buffer[index + 3];
+            }
+            return result.join(",");
+        }
+        /// @internal
+        childString(index) {
+            let id = this.buffer[index], endIndex = this.buffer[index + 3];
+            let type = this.set.types[id], result = type.name;
+            if (/\W/.test(result) && !type.isError)
+                result = JSON.stringify(result);
+            index += 4;
+            if (endIndex == index)
+                return result;
+            let children = [];
+            while (index < endIndex) {
+                children.push(this.childString(index));
+                index = this.buffer[index + 3];
+            }
+            return result + "(" + children.join(",") + ")";
+        }
+        /// @internal
+        findChild(startIndex, endIndex, dir, pos, side) {
+            let { buffer } = this, pick = -1;
+            for (let i = startIndex; i != endIndex; i = buffer[i + 3]) {
+                if (checkSide(side, pos, buffer[i + 1], buffer[i + 2])) {
+                    pick = i;
+                    if (dir > 0)
+                        break;
+                }
+            }
+            return pick;
+        }
+        /// @internal
+        slice(startI, endI, from, to) {
+            let b = this.buffer;
+            let copy = new Uint16Array(endI - startI);
+            for (let i = startI, j = 0; i < endI;) {
+                copy[j++] = b[i++];
+                copy[j++] = b[i++] - from;
+                copy[j++] = b[i++] - from;
+                copy[j++] = b[i++] - startI;
+            }
+            return new TreeBuffer(copy, to - from, this.set);
+        }
+    }
+    function checkSide(side, pos, from, to) {
+        switch (side) {
+            case -2 /* Before */: return from < pos;
+            case -1 /* AtOrBefore */: return to >= pos && from < pos;
+            case 0 /* Around */: return from < pos && to > pos;
+            case 1 /* AtOrAfter */: return from <= pos && to > pos;
+            case 2 /* After */: return to > pos;
+            case 4 /* DontCare */: return true;
+        }
+    }
+    function enterUnfinishedNodesBefore(node, pos) {
+        let scan = node.childBefore(pos);
+        while (scan) {
+            let last = scan.lastChild;
+            if (!last || last.to != scan.to)
+                break;
+            if (last.type.isError && last.from == last.to) {
+                node = scan;
+                scan = last.prevSibling;
+            }
+            else {
+                scan = last;
+            }
+        }
+        return node;
+    }
+    class TreeNode {
+        constructor(node, _from, 
+        // Index in parent node, set to -1 if the node is not a direct child of _parent.node (overlay)
+        index, _parent) {
+            this.node = node;
+            this._from = _from;
+            this.index = index;
+            this._parent = _parent;
+        }
+        get type() { return this.node.type; }
+        get name() { return this.node.type.name; }
+        get from() { return this._from; }
+        get to() { return this._from + this.node.length; }
+        nextChild(i, dir, pos, side, mode = 0) {
+            for (let parent = this;;) {
+                for (let { children, positions } = parent.node, e = dir > 0 ? children.length : -1; i != e; i += dir) {
+                    let next = children[i], start = positions[i] + parent._from;
+                    if (!checkSide(side, pos, start, start + next.length))
+                        continue;
+                    if (next instanceof TreeBuffer) {
+                        if (mode & 2 /* NoEnterBuffer */)
+                            continue;
+                        let index = next.findChild(0, next.buffer.length, dir, pos - start, side);
+                        if (index > -1)
+                            return new BufferNode(new BufferContext(parent, next, i, start), null, index);
+                    }
+                    else if ((mode & 1 /* Full */) || (!next.type.isAnonymous || hasChild(next))) {
+                        let mounted;
+                        if (next.props && (mounted = next.prop(NodeProp.mounted)) && !mounted.overlay)
+                            return new TreeNode(mounted.tree, start, i, parent);
+                        let inner = new TreeNode(next, start, i, parent);
+                        return (mode & 1 /* Full */) || !inner.type.isAnonymous ? inner
+                            : inner.nextChild(dir < 0 ? next.children.length - 1 : 0, dir, pos, side);
+                    }
+                }
+                if ((mode & 1 /* Full */) || !parent.type.isAnonymous)
+                    return null;
+                if (parent.index >= 0)
+                    i = parent.index + dir;
+                else
+                    i = dir < 0 ? -1 : parent._parent.node.children.length;
+                parent = parent._parent;
+                if (!parent)
+                    return null;
+            }
+        }
+        get firstChild() { return this.nextChild(0, 1, 0, 4 /* DontCare */); }
+        get lastChild() { return this.nextChild(this.node.children.length - 1, -1, 0, 4 /* DontCare */); }
+        childAfter(pos) { return this.nextChild(0, 1, pos, 2 /* After */); }
+        childBefore(pos) { return this.nextChild(this.node.children.length - 1, -1, pos, -2 /* Before */); }
+        enter(pos, side, overlays = true, buffers = true) {
+            let mounted;
+            if (overlays && (mounted = this.node.prop(NodeProp.mounted)) && mounted.overlay) {
+                let rPos = pos - this.from;
+                for (let { from, to } of mounted.overlay) {
+                    if ((side > 0 ? from <= rPos : from < rPos) &&
+                        (side < 0 ? to >= rPos : to > rPos))
+                        return new TreeNode(mounted.tree, mounted.overlay[0].from + this.from, -1, this);
+                }
+            }
+            return this.nextChild(0, 1, pos, side, buffers ? 0 : 2 /* NoEnterBuffer */);
+        }
+        nextSignificantParent() {
+            let val = this;
+            while (val.type.isAnonymous && val._parent)
+                val = val._parent;
+            return val;
+        }
+        get parent() {
+            return this._parent ? this._parent.nextSignificantParent() : null;
+        }
+        get nextSibling() {
+            return this._parent && this.index >= 0 ? this._parent.nextChild(this.index + 1, 1, 0, 4 /* DontCare */) : null;
+        }
+        get prevSibling() {
+            return this._parent && this.index >= 0 ? this._parent.nextChild(this.index - 1, -1, 0, 4 /* DontCare */) : null;
+        }
+        get cursor() { return new TreeCursor(this); }
+        get tree() { return this.node; }
+        toTree() { return this.node; }
+        resolve(pos, side = 0) {
+            return this.cursor.moveTo(pos, side).node;
+        }
+        enterUnfinishedNodesBefore(pos) { return enterUnfinishedNodesBefore(this, pos); }
+        getChild(type, before = null, after = null) {
+            let r = getChildren(this, type, before, after);
+            return r.length ? r[0] : null;
+        }
+        getChildren(type, before = null, after = null) {
+            return getChildren(this, type, before, after);
+        }
+        /// @internal
+        toString() { return this.node.toString(); }
+    }
+    function getChildren(node, type, before, after) {
+        let cur = node.cursor, result = [];
+        if (!cur.firstChild())
+            return result;
+        if (before != null)
+            while (!cur.type.is(before))
+                if (!cur.nextSibling())
+                    return result;
+        for (;;) {
+            if (after != null && cur.type.is(after))
+                return result;
+            if (cur.type.is(type))
+                result.push(cur.node);
+            if (!cur.nextSibling())
+                return after == null ? result : [];
+        }
+    }
+    class BufferContext {
+        constructor(parent, buffer, index, start) {
+            this.parent = parent;
+            this.buffer = buffer;
+            this.index = index;
+            this.start = start;
+        }
+    }
+    class BufferNode {
+        constructor(context, _parent, index) {
+            this.context = context;
+            this._parent = _parent;
+            this.index = index;
+            this.type = context.buffer.set.types[context.buffer.buffer[index]];
+        }
+        get name() { return this.type.name; }
+        get from() { return this.context.start + this.context.buffer.buffer[this.index + 1]; }
+        get to() { return this.context.start + this.context.buffer.buffer[this.index + 2]; }
+        child(dir, pos, side) {
+            let { buffer } = this.context;
+            let index = buffer.findChild(this.index + 4, buffer.buffer[this.index + 3], dir, pos - this.context.start, side);
+            return index < 0 ? null : new BufferNode(this.context, this, index);
+        }
+        get firstChild() { return this.child(1, 0, 4 /* DontCare */); }
+        get lastChild() { return this.child(-1, 0, 4 /* DontCare */); }
+        childAfter(pos) { return this.child(1, pos, 2 /* After */); }
+        childBefore(pos) { return this.child(-1, pos, -2 /* Before */); }
+        enter(pos, side, overlays, buffers = true) {
+            if (!buffers)
+                return null;
+            let { buffer } = this.context;
+            let index = buffer.findChild(this.index + 4, buffer.buffer[this.index + 3], side > 0 ? 1 : -1, pos - this.context.start, side);
+            return index < 0 ? null : new BufferNode(this.context, this, index);
+        }
+        get parent() {
+            return this._parent || this.context.parent.nextSignificantParent();
+        }
+        externalSibling(dir) {
+            return this._parent ? null : this.context.parent.nextChild(this.context.index + dir, dir, 0, 4 /* DontCare */);
+        }
+        get nextSibling() {
+            let { buffer } = this.context;
+            let after = buffer.buffer[this.index + 3];
+            if (after < (this._parent ? buffer.buffer[this._parent.index + 3] : buffer.buffer.length))
+                return new BufferNode(this.context, this._parent, after);
+            return this.externalSibling(1);
+        }
+        get prevSibling() {
+            let { buffer } = this.context;
+            let parentStart = this._parent ? this._parent.index + 4 : 0;
+            if (this.index == parentStart)
+                return this.externalSibling(-1);
+            return new BufferNode(this.context, this._parent, buffer.findChild(parentStart, this.index, -1, 0, 4 /* DontCare */));
+        }
+        get cursor() { return new TreeCursor(this); }
+        get tree() { return null; }
+        toTree() {
+            let children = [], positions = [];
+            let { buffer } = this.context;
+            let startI = this.index + 4, endI = buffer.buffer[this.index + 3];
+            if (endI > startI) {
+                let from = buffer.buffer[this.index + 1], to = buffer.buffer[this.index + 2];
+                children.push(buffer.slice(startI, endI, from, to));
+                positions.push(0);
+            }
+            return new Tree(this.type, children, positions, this.to - this.from);
+        }
+        resolve(pos, side = 0) {
+            return this.cursor.moveTo(pos, side).node;
+        }
+        enterUnfinishedNodesBefore(pos) { return enterUnfinishedNodesBefore(this, pos); }
+        /// @internal
+        toString() { return this.context.buffer.childString(this.index); }
+        getChild(type, before = null, after = null) {
+            let r = getChildren(this, type, before, after);
+            return r.length ? r[0] : null;
+        }
+        getChildren(type, before = null, after = null) {
+            return getChildren(this, type, before, after);
+        }
+    }
+    /// A tree cursor object focuses on a given node in a syntax tree, and
+    /// allows you to move to adjacent nodes.
+    class TreeCursor {
+        /// @internal
+        constructor(node, 
+        /// @internal
+        mode = 0) {
+            this.mode = mode;
+            this.buffer = null;
+            this.stack = [];
+            this.index = 0;
+            this.bufferNode = null;
+            if (node instanceof TreeNode) {
+                this.yieldNode(node);
+            }
+            else {
+                this._tree = node.context.parent;
+                this.buffer = node.context;
+                for (let n = node._parent; n; n = n._parent)
+                    this.stack.unshift(n.index);
+                this.bufferNode = node;
+                this.yieldBuf(node.index);
+            }
+        }
+        /// Shorthand for `.type.name`.
+        get name() { return this.type.name; }
+        yieldNode(node) {
+            if (!node)
+                return false;
+            this._tree = node;
+            this.type = node.type;
+            this.from = node.from;
+            this.to = node.to;
+            return true;
+        }
+        yieldBuf(index, type) {
+            this.index = index;
+            let { start, buffer } = this.buffer;
+            this.type = type || buffer.set.types[buffer.buffer[index]];
+            this.from = start + buffer.buffer[index + 1];
+            this.to = start + buffer.buffer[index + 2];
+            return true;
+        }
+        yield(node) {
+            if (!node)
+                return false;
+            if (node instanceof TreeNode) {
+                this.buffer = null;
+                return this.yieldNode(node);
+            }
+            this.buffer = node.context;
+            return this.yieldBuf(node.index, node.type);
+        }
+        /// @internal
+        toString() {
+            return this.buffer ? this.buffer.buffer.childString(this.index) : this._tree.toString();
+        }
+        /// @internal
+        enterChild(dir, pos, side) {
+            if (!this.buffer)
+                return this.yield(this._tree.nextChild(dir < 0 ? this._tree.node.children.length - 1 : 0, dir, pos, side, this.mode));
+            let { buffer } = this.buffer;
+            let index = buffer.findChild(this.index + 4, buffer.buffer[this.index + 3], dir, pos - this.buffer.start, side);
+            if (index < 0)
+                return false;
+            this.stack.push(this.index);
+            return this.yieldBuf(index);
+        }
+        /// Move the cursor to this node's first child. When this returns
+        /// false, the node has no child, and the cursor has not been moved.
+        firstChild() { return this.enterChild(1, 0, 4 /* DontCare */); }
+        /// Move the cursor to this node's last child.
+        lastChild() { return this.enterChild(-1, 0, 4 /* DontCare */); }
+        /// Move the cursor to the first child that ends after `pos`.
+        childAfter(pos) { return this.enterChild(1, pos, 2 /* After */); }
+        /// Move to the last child that starts before `pos`.
+        childBefore(pos) { return this.enterChild(-1, pos, -2 /* Before */); }
+        /// Move the cursor to the child around `pos`. If side is -1 the
+        /// child may end at that position, when 1 it may start there. This
+        /// will also enter [overlaid](#common.MountedTree.overlay)
+        /// [mounted](#common.NodeProp^mounted) trees unless `overlays` is
+        /// set to false.
+        enter(pos, side, overlays = true, buffers = true) {
+            if (!this.buffer)
+                return this.yield(this._tree.enter(pos, side, overlays, buffers));
+            return buffers ? this.enterChild(1, pos, side) : false;
+        }
+        /// Move the node's parent node, if this isn't the top node.
+        parent() {
+            if (!this.buffer)
+                return this.yieldNode((this.mode & 1 /* Full */) ? this._tree._parent : this._tree.parent);
+            if (this.stack.length)
+                return this.yieldBuf(this.stack.pop());
+            let parent = (this.mode & 1 /* Full */) ? this.buffer.parent : this.buffer.parent.nextSignificantParent();
+            this.buffer = null;
+            return this.yieldNode(parent);
+        }
+        /// @internal
+        sibling(dir) {
+            if (!this.buffer)
+                return !this._tree._parent ? false
+                    : this.yield(this._tree.index < 0 ? null
+                        : this._tree._parent.nextChild(this._tree.index + dir, dir, 0, 4 /* DontCare */, this.mode));
+            let { buffer } = this.buffer, d = this.stack.length - 1;
+            if (dir < 0) {
+                let parentStart = d < 0 ? 0 : this.stack[d] + 4;
+                if (this.index != parentStart)
+                    return this.yieldBuf(buffer.findChild(parentStart, this.index, -1, 0, 4 /* DontCare */));
+            }
+            else {
+                let after = buffer.buffer[this.index + 3];
+                if (after < (d < 0 ? buffer.buffer.length : buffer.buffer[this.stack[d] + 3]))
+                    return this.yieldBuf(after);
+            }
+            return d < 0 ? this.yield(this.buffer.parent.nextChild(this.buffer.index + dir, dir, 0, 4 /* DontCare */, this.mode)) : false;
+        }
+        /// Move to this node's next sibling, if any.
+        nextSibling() { return this.sibling(1); }
+        /// Move to this node's previous sibling, if any.
+        prevSibling() { return this.sibling(-1); }
+        atLastNode(dir) {
+            let index, parent, { buffer } = this;
+            if (buffer) {
+                if (dir > 0) {
+                    if (this.index < buffer.buffer.buffer.length)
+                        return false;
+                }
+                else {
+                    for (let i = 0; i < this.index; i++)
+                        if (buffer.buffer.buffer[i + 3] < this.index)
+                            return false;
+                }
+                ({ index, parent } = buffer);
+            }
+            else {
+                ({ index, _parent: parent } = this._tree);
+            }
+            for (; parent; { index, _parent: parent } = parent) {
+                if (index > -1)
+                    for (let i = index + dir, e = dir < 0 ? -1 : parent.node.children.length; i != e; i += dir) {
+                        let child = parent.node.children[i];
+                        if ((this.mode & 1 /* Full */) || child instanceof TreeBuffer || !child.type.isAnonymous || hasChild(child))
+                            return false;
+                    }
+            }
+            return true;
+        }
+        move(dir, enter) {
+            if (enter && this.enterChild(dir, 0, 4 /* DontCare */))
+                return true;
+            for (;;) {
+                if (this.sibling(dir))
+                    return true;
+                if (this.atLastNode(dir) || !this.parent())
+                    return false;
+            }
+        }
+        /// Move to the next node in a
+        /// [pre-order](https://en.wikipedia.org/wiki/Tree_traversal#Pre-order_(NLR))
+        /// traversal, going from a node to its first child or, if the
+        /// current node is empty or `enter` is false, its next sibling or
+        /// the next sibling of the first parent node that has one.
+        next(enter = true) { return this.move(1, enter); }
+        /// Move to the next node in a last-to-first pre-order traveral. A
+        /// node is followed by its last child or, if it has none, its
+        /// previous sibling or the previous sibling of the first parent
+        /// node that has one.
+        prev(enter = true) { return this.move(-1, enter); }
+        /// Move the cursor to the innermost node that covers `pos`. If
+        /// `side` is -1, it will enter nodes that end at `pos`. If it is 1,
+        /// it will enter nodes that start at `pos`.
+        moveTo(pos, side = 0) {
+            // Move up to a node that actually holds the position, if possible
+            while (this.from == this.to ||
+                (side < 1 ? this.from >= pos : this.from > pos) ||
+                (side > -1 ? this.to <= pos : this.to < pos))
+                if (!this.parent())
+                    break;
+            // Then scan down into child nodes as far as possible
+            while (this.enterChild(1, pos, side)) { }
+            return this;
+        }
+        /// Get a [syntax node](#common.SyntaxNode) at the cursor's current
+        /// position.
+        get node() {
+            if (!this.buffer)
+                return this._tree;
+            let cache = this.bufferNode, result = null, depth = 0;
+            if (cache && cache.context == this.buffer) {
+                scan: for (let index = this.index, d = this.stack.length; d >= 0;) {
+                    for (let c = cache; c; c = c._parent)
+                        if (c.index == index) {
+                            if (index == this.index)
+                                return c;
+                            result = c;
+                            depth = d + 1;
+                            break scan;
+                        }
+                    index = this.stack[--d];
+                }
+            }
+            for (let i = depth; i < this.stack.length; i++)
+                result = new BufferNode(this.buffer, result, this.stack[i]);
+            return this.bufferNode = new BufferNode(this.buffer, result, this.index);
+        }
+        /// Get the [tree](#common.Tree) that represents the current node, if
+        /// any. Will return null when the node is in a [tree
+        /// buffer](#common.TreeBuffer).
+        get tree() {
+            return this.buffer ? null : this._tree.node;
+        }
+    }
+    function hasChild(tree) {
+        return tree.children.some(ch => ch instanceof TreeBuffer || !ch.type.isAnonymous || hasChild(ch));
+    }
+    function buildTree(data) {
+        var _a;
+        let { buffer, nodeSet, maxBufferLength = DefaultBufferLength, reused = [], minRepeatType = nodeSet.types.length } = data;
+        let cursor = Array.isArray(buffer) ? new FlatBufferCursor(buffer, buffer.length) : buffer;
+        let types = nodeSet.types;
+        let contextHash = 0, lookAhead = 0;
+        function takeNode(parentStart, minPos, children, positions, inRepeat) {
+            let { id, start, end, size } = cursor;
+            let lookAheadAtStart = lookAhead;
+            while (size < 0) {
+                cursor.next();
+                if (size == -1 /* Reuse */) {
+                    let node = reused[id];
+                    children.push(node);
+                    positions.push(start - parentStart);
+                    return;
+                }
+                else if (size == -3 /* ContextChange */) { // Context change
+                    contextHash = id;
+                    return;
+                }
+                else if (size == -4 /* LookAhead */) {
+                    lookAhead = id;
+                    return;
+                }
+                else {
+                    throw new RangeError(`Unrecognized record size: ${size}`);
+                }
+            }
+            let type = types[id], node, buffer;
+            let startPos = start - parentStart;
+            if (end - start <= maxBufferLength && (buffer = findBufferSize(cursor.pos - minPos, inRepeat))) {
+                // Small enough for a buffer, and no reused nodes inside
+                let data = new Uint16Array(buffer.size - buffer.skip);
+                let endPos = cursor.pos - buffer.size, index = data.length;
+                while (cursor.pos > endPos)
+                    index = copyToBuffer(buffer.start, data, index);
+                node = new TreeBuffer(data, end - buffer.start, nodeSet);
+                startPos = buffer.start - parentStart;
+            }
+            else { // Make it a node
+                let endPos = cursor.pos - size;
+                cursor.next();
+                let localChildren = [], localPositions = [];
+                let localInRepeat = id >= minRepeatType ? id : -1;
+                let lastGroup = 0, lastEnd = end;
+                while (cursor.pos > endPos) {
+                    if (localInRepeat >= 0 && cursor.id == localInRepeat && cursor.size >= 0) {
+                        if (cursor.end <= lastEnd - maxBufferLength) {
+                            makeRepeatLeaf(localChildren, localPositions, start, lastGroup, cursor.end, lastEnd, localInRepeat, lookAheadAtStart);
+                            lastGroup = localChildren.length;
+                            lastEnd = cursor.end;
+                        }
+                        cursor.next();
+                    }
+                    else {
+                        takeNode(start, endPos, localChildren, localPositions, localInRepeat);
+                    }
+                }
+                if (localInRepeat >= 0 && lastGroup > 0 && lastGroup < localChildren.length)
+                    makeRepeatLeaf(localChildren, localPositions, start, lastGroup, start, lastEnd, localInRepeat, lookAheadAtStart);
+                localChildren.reverse();
+                localPositions.reverse();
+                if (localInRepeat > -1 && lastGroup > 0) {
+                    let make = makeBalanced(type);
+                    node = balanceRange(type, localChildren, localPositions, 0, localChildren.length, 0, end - start, make, make);
+                }
+                else {
+                    node = makeTree(type, localChildren, localPositions, end - start, lookAheadAtStart - end);
+                }
+            }
+            children.push(node);
+            positions.push(startPos);
+        }
+        function makeBalanced(type) {
+            return (children, positions, length) => {
+                let lookAhead = 0, lastI = children.length - 1, last, lookAheadProp;
+                if (lastI >= 0 && (last = children[lastI]) instanceof Tree) {
+                    if (!lastI && last.type == type && last.length == length)
+                        return last;
+                    if (lookAheadProp = last.prop(NodeProp.lookAhead))
+                        lookAhead = positions[lastI] + last.length + lookAheadProp;
+                }
+                return makeTree(type, children, positions, length, lookAhead);
+            };
+        }
+        function makeRepeatLeaf(children, positions, base, i, from, to, type, lookAhead) {
+            let localChildren = [], localPositions = [];
+            while (children.length > i) {
+                localChildren.push(children.pop());
+                localPositions.push(positions.pop() + base - from);
+            }
+            children.push(makeTree(nodeSet.types[type], localChildren, localPositions, to - from, lookAhead - to));
+            positions.push(from - base);
+        }
+        function makeTree(type, children, positions, length, lookAhead = 0, props) {
+            if (contextHash) {
+                let pair = [NodeProp.contextHash, contextHash];
+                props = props ? [pair].concat(props) : [pair];
+            }
+            if (lookAhead > 25) {
+                let pair = [NodeProp.lookAhead, lookAhead];
+                props = props ? [pair].concat(props) : [pair];
+            }
+            return new Tree(type, children, positions, length, props);
+        }
+        function findBufferSize(maxSize, inRepeat) {
+            // Scan through the buffer to find previous siblings that fit
+            // together in a TreeBuffer, and don't contain any reused nodes
+            // (which can't be stored in a buffer).
+            // If `inRepeat` is > -1, ignore node boundaries of that type for
+            // nesting, but make sure the end falls either at the start
+            // (`maxSize`) or before such a node.
+            let fork = cursor.fork();
+            let size = 0, start = 0, skip = 0, minStart = fork.end - maxBufferLength;
+            let result = { size: 0, start: 0, skip: 0 };
+            scan: for (let minPos = fork.pos - maxSize; fork.pos > minPos;) {
+                let nodeSize = fork.size;
+                // Pretend nested repeat nodes of the same type don't exist
+                if (fork.id == inRepeat && nodeSize >= 0) {
+                    // Except that we store the current state as a valid return
+                    // value.
+                    result.size = size;
+                    result.start = start;
+                    result.skip = skip;
+                    skip += 4;
+                    size += 4;
+                    fork.next();
+                    continue;
+                }
+                let startPos = fork.pos - nodeSize;
+                if (nodeSize < 0 || startPos < minPos || fork.start < minStart)
+                    break;
+                let localSkipped = fork.id >= minRepeatType ? 4 : 0;
+                let nodeStart = fork.start;
+                fork.next();
+                while (fork.pos > startPos) {
+                    if (fork.size < 0) {
+                        if (fork.size == -3 /* ContextChange */)
+                            localSkipped += 4;
+                        else
+                            break scan;
+                    }
+                    else if (fork.id >= minRepeatType) {
+                        localSkipped += 4;
+                    }
+                    fork.next();
+                }
+                start = nodeStart;
+                size += nodeSize;
+                skip += localSkipped;
+            }
+            if (inRepeat < 0 || size == maxSize) {
+                result.size = size;
+                result.start = start;
+                result.skip = skip;
+            }
+            return result.size > 4 ? result : undefined;
+        }
+        function copyToBuffer(bufferStart, buffer, index) {
+            let { id, start, end, size } = cursor;
+            cursor.next();
+            if (size >= 0 && id < minRepeatType) {
+                let startIndex = index;
+                if (size > 4) {
+                    let endPos = cursor.pos - (size - 4);
+                    while (cursor.pos > endPos)
+                        index = copyToBuffer(bufferStart, buffer, index);
+                }
+                buffer[--index] = startIndex;
+                buffer[--index] = end - bufferStart;
+                buffer[--index] = start - bufferStart;
+                buffer[--index] = id;
+            }
+            else if (size == -3 /* ContextChange */) {
+                contextHash = id;
+            }
+            else if (size == -4 /* LookAhead */) {
+                lookAhead = id;
+            }
+            return index;
+        }
+        let children = [], positions = [];
+        while (cursor.pos > 0)
+            takeNode(data.start || 0, data.bufferStart || 0, children, positions, -1);
+        let length = (_a = data.length) !== null && _a !== void 0 ? _a : (children.length ? positions[0] + children[0].length : 0);
+        return new Tree(types[data.topID], children.reverse(), positions.reverse(), length);
+    }
+    const nodeSizeCache = new WeakMap;
+    function nodeSize(balanceType, node) {
+        if (!balanceType.isAnonymous || node instanceof TreeBuffer || node.type != balanceType)
+            return 1;
+        let size = nodeSizeCache.get(node);
+        if (size == null) {
+            size = node.children.reduce((s, ch) => s + nodeSize(balanceType, ch), 1);
+            nodeSizeCache.set(node, size);
+        }
+        return size;
+    }
+    function balanceRange(
+    // The type to tag the resulting tree with. Will also be used for
+    // internal nodes when it is an anonymous type
+    type, 
+    // The direct children and their positions
+    children, positions, 
+    // The index range in children/positions to use
+    from, to, 
+    // The start position of the nodes, relative to their parent.
+    start, 
+    // Length of the outer node
+    length, 
+    // Function to build the top node of the balanced tree
+    mkTop, 
+    // Function to build internal nodes for the balanced tree
+    mkTree) {
+        let total = 0;
+        for (let i = from; i < to; i++)
+            total += nodeSize(type, children[i]);
+        let maxChild = Math.ceil((total * 1.5) / 8 /* BranchFactor */);
+        let localChildren = [], localPositions = [];
+        function divide(children, positions, from, to, offset) {
+            for (let i = from; i < to;) {
+                let groupFrom = i, groupStart = positions[i], groupSize = nodeSize(type, children[i]);
+                i++;
+                for (; i < to; i++) {
+                    let nextSize = nodeSize(type, children[i]);
+                    if (groupSize + nextSize >= maxChild)
+                        break;
+                    groupSize += nextSize;
+                }
+                if (i == groupFrom + 1) {
+                    if (groupSize > maxChild) {
+                        let only = children[groupFrom];
+                        divide(only.children, only.positions, 0, only.children.length, positions[groupFrom] + offset);
+                        continue;
+                    }
+                    localChildren.push(children[groupFrom]);
+                }
+                else {
+                    let length = positions[i - 1] + children[i - 1].length - groupStart;
+                    localChildren.push(balanceRange(type, children, positions, groupFrom, i, groupStart, length, null, mkTree));
+                }
+                localPositions.push(groupStart + offset - start);
+            }
+        }
+        divide(children, positions, from, to, 0);
+        return (mkTop || mkTree)(localChildren, localPositions, length);
+    }
+
+    /// Tree fragments are used during [incremental
+    /// parsing](#common.Parser.startParse) to track parts of old trees
+    /// that can be reused in a new parse. An array of fragments is used
+    /// to track regions of an old tree whose nodes might be reused in new
+    /// parses. Use the static
+    /// [`applyChanges`](#common.TreeFragment^applyChanges) method to
+    /// update fragments for document changes.
+    class TreeFragment {
+        /// Construct a tree fragment.
+        constructor(
+        /// The start of the unchanged range pointed to by this fragment.
+        /// This refers to an offset in the _updated_ document (as opposed
+        /// to the original tree).
+        from, 
+        /// The end of the unchanged range.
+        to, 
+        /// The tree that this fragment is based on.
+        tree, 
+        /// The offset between the fragment's tree and the document that
+        /// this fragment can be used against. Add this when going from
+        /// document to tree positions, subtract it to go from tree to
+        /// document positions.
+        offset, openStart = false, openEnd = false) {
+            this.from = from;
+            this.to = to;
+            this.tree = tree;
+            this.offset = offset;
+            this.open = (openStart ? 1 /* Start */ : 0) | (openEnd ? 2 /* End */ : 0);
+        }
+        /// Whether the start of the fragment represents the start of a
+        /// parse, or the end of a change. (In the second case, it may not
+        /// be safe to reuse some nodes at the start, depending on the
+        /// parsing algorithm.)
+        get openStart() { return (this.open & 1 /* Start */) > 0; }
+        /// Whether the end of the fragment represents the end of a
+        /// full-document parse, or the start of a change.
+        get openEnd() { return (this.open & 2 /* End */) > 0; }
+        /// Create a set of fragments from a freshly parsed tree, or update
+        /// an existing set of fragments by replacing the ones that overlap
+        /// with a tree with content from the new tree. When `partial` is
+        /// true, the parse is treated as incomplete, and the resulting
+        /// fragment has [`openEnd`](#common.TreeFragment.openEnd) set to
+        /// true.
+        static addTree(tree, fragments = [], partial = false) {
+            let result = [new TreeFragment(0, tree.length, tree, 0, false, partial)];
+            for (let f of fragments)
+                if (f.to > tree.length)
+                    result.push(f);
+            return result;
+        }
+        /// Apply a set of edits to an array of fragments, removing or
+        /// splitting fragments as necessary to remove edited ranges, and
+        /// adjusting offsets for fragments that moved.
+        static applyChanges(fragments, changes, minGap = 128) {
+            if (!changes.length)
+                return fragments;
+            let result = [];
+            let fI = 1, nextF = fragments.length ? fragments[0] : null;
+            for (let cI = 0, pos = 0, off = 0;; cI++) {
+                let nextC = cI < changes.length ? changes[cI] : null;
+                let nextPos = nextC ? nextC.fromA : 1e9;
+                if (nextPos - pos >= minGap)
+                    while (nextF && nextF.from < nextPos) {
+                        let cut = nextF;
+                        if (pos >= cut.from || nextPos <= cut.to || off) {
+                            let fFrom = Math.max(cut.from, pos) - off, fTo = Math.min(cut.to, nextPos) - off;
+                            cut = fFrom >= fTo ? null : new TreeFragment(fFrom, fTo, cut.tree, cut.offset + off, cI > 0, !!nextC);
+                        }
+                        if (cut)
+                            result.push(cut);
+                        if (nextF.to > nextPos)
+                            break;
+                        nextF = fI < fragments.length ? fragments[fI++] : null;
+                    }
+                if (!nextC)
+                    break;
+                pos = nextC.toA;
+                off = nextC.toA - nextC.toB;
+            }
+            return result;
+        }
+    }
+    /// A superclass that parsers should extend.
+    class Parser {
+        /// Start a parse, returning a [partial parse](#common.PartialParse)
+        /// object. [`fragments`](#common.TreeFragment) can be passed in to
+        /// make the parse incremental.
+        ///
+        /// By default, the entire input is parsed. You can pass `ranges`,
+        /// which should be a sorted array of non-empty, non-overlapping
+        /// ranges, to parse only those ranges. The tree returned in that
+        /// case will start at `ranges[0].from`.
+        startParse(input, fragments, ranges) {
+            if (typeof input == "string")
+                input = new StringInput(input);
+            ranges = !ranges ? [new Range$1(0, input.length)] : ranges.length ? ranges.map(r => new Range$1(r.from, r.to)) : [new Range$1(0, 0)];
+            return this.createParse(input, fragments || [], ranges);
+        }
+        /// Run a full parse, returning the resulting tree.
+        parse(input, fragments, ranges) {
+            let parse = this.startParse(input, fragments, ranges);
+            for (;;) {
+                let done = parse.advance();
+                if (done)
+                    return done;
+            }
+        }
+    }
+    class StringInput {
+        constructor(string) {
+            this.string = string;
+        }
+        get length() { return this.string.length; }
+        chunk(from) { return this.string.slice(from); }
+        get lineChunks() { return false; }
+        read(from, to) { return this.string.slice(from, to); }
+    }
+
+    /// A parse stack. These are used internally by the parser to track
+    /// parsing progress. They also provide some properties and methods
+    /// that external code such as a tokenizer can use to get information
+    /// about the parse state.
+    class Stack {
+        /// @internal
+        constructor(
+        /// The parse that this stack is part of @internal
+        p, 
+        /// Holds state, input pos, buffer index triplets for all but the
+        /// top state @internal
+        stack, 
+        /// The current parse state @internal
+        state, 
+        // The position at which the next reduce should take place. This
+        // can be less than `this.pos` when skipped expressions have been
+        // added to the stack (which should be moved outside of the next
+        // reduction)
+        /// @internal
+        reducePos, 
+        /// The input position up to which this stack has parsed.
+        pos, 
+        /// The dynamic score of the stack, including dynamic precedence
+        /// and error-recovery penalties
+        /// @internal
+        score, 
+        // The output buffer. Holds (type, start, end, size) quads
+        // representing nodes created by the parser, where `size` is
+        // amount of buffer array entries covered by this node.
+        /// @internal
+        buffer, 
+        // The base offset of the buffer. When stacks are split, the split
+        // instance shared the buffer history with its parent up to
+        // `bufferBase`, which is the absolute offset (including the
+        // offset of previous splits) into the buffer at which this stack
+        // starts writing.
+        /// @internal
+        bufferBase, 
+        /// @internal
+        curContext, 
+        /// @internal
+        lookAhead = 0, 
+        // A parent stack from which this was split off, if any. This is
+        // set up so that it always points to a stack that has some
+        // additional buffer content, never to a stack with an equal
+        // `bufferBase`.
+        /// @internal
+        parent) {
+            this.p = p;
+            this.stack = stack;
+            this.state = state;
+            this.reducePos = reducePos;
+            this.pos = pos;
+            this.score = score;
+            this.buffer = buffer;
+            this.bufferBase = bufferBase;
+            this.curContext = curContext;
+            this.lookAhead = lookAhead;
+            this.parent = parent;
+        }
+        /// @internal
+        toString() {
+            return `[${this.stack.filter((_, i) => i % 3 == 0).concat(this.state)}]@${this.pos}${this.score ? "!" + this.score : ""}`;
+        }
+        // Start an empty stack
+        /// @internal
+        static start(p, state, pos = 0) {
+            let cx = p.parser.context;
+            return new Stack(p, [], state, pos, pos, 0, [], 0, cx ? new StackContext(cx, cx.start) : null, 0, null);
+        }
+        /// The stack's current [context](#lr.ContextTracker) value, if
+        /// any. Its type will depend on the context tracker's type
+        /// parameter, or it will be `null` if there is no context
+        /// tracker.
+        get context() { return this.curContext ? this.curContext.context : null; }
+        // Push a state onto the stack, tracking its start position as well
+        // as the buffer base at that point.
+        /// @internal
+        pushState(state, start) {
+            this.stack.push(this.state, start, this.bufferBase + this.buffer.length);
+            this.state = state;
+        }
+        // Apply a reduce action
+        /// @internal
+        reduce(action) {
+            let depth = action >> 19 /* ReduceDepthShift */, type = action & 65535 /* ValueMask */;
+            let { parser } = this.p;
+            let dPrec = parser.dynamicPrecedence(type);
+            if (dPrec)
+                this.score += dPrec;
+            if (depth == 0) {
+                // Zero-depth reductions are a special case—they add stuff to
+                // the stack without popping anything off.
+                if (type < parser.minRepeatTerm)
+                    this.storeNode(type, this.reducePos, this.reducePos, 4, true);
+                this.pushState(parser.getGoto(this.state, type, true), this.reducePos);
+                this.reduceContext(type, this.reducePos);
+                return;
+            }
+            // Find the base index into `this.stack`, content after which will
+            // be dropped. Note that with `StayFlag` reductions we need to
+            // consume two extra frames (the dummy parent node for the skipped
+            // expression and the state that we'll be staying in, which should
+            // be moved to `this.state`).
+            let base = this.stack.length - ((depth - 1) * 3) - (action & 262144 /* StayFlag */ ? 6 : 0);
+            let start = this.stack[base - 2];
+            let bufferBase = this.stack[base - 1], count = this.bufferBase + this.buffer.length - bufferBase;
+            // Store normal terms or `R -> R R` repeat reductions
+            if (type < parser.minRepeatTerm || (action & 131072 /* RepeatFlag */)) {
+                let pos = parser.stateFlag(this.state, 1 /* Skipped */) ? this.pos : this.reducePos;
+                this.storeNode(type, start, pos, count + 4, true);
+            }
+            if (action & 262144 /* StayFlag */) {
+                this.state = this.stack[base];
+            }
+            else {
+                let baseStateID = this.stack[base - 3];
+                this.state = parser.getGoto(baseStateID, type, true);
+            }
+            while (this.stack.length > base)
+                this.stack.pop();
+            this.reduceContext(type, start);
+        }
+        // Shift a value into the buffer
+        /// @internal
+        storeNode(term, start, end, size = 4, isReduce = false) {
+            if (term == 0 /* Err */) { // Try to omit/merge adjacent error nodes
+                let cur = this, top = this.buffer.length;
+                if (top == 0 && cur.parent) {
+                    top = cur.bufferBase - cur.parent.bufferBase;
+                    cur = cur.parent;
+                }
+                if (top > 0 && cur.buffer[top - 4] == 0 /* Err */ && cur.buffer[top - 1] > -1) {
+                    if (start == end)
+                        return;
+                    if (cur.buffer[top - 2] >= start) {
+                        cur.buffer[top - 2] = end;
+                        return;
+                    }
+                }
+            }
+            if (!isReduce || this.pos == end) { // Simple case, just append
+                this.buffer.push(term, start, end, size);
+            }
+            else { // There may be skipped nodes that have to be moved forward
+                let index = this.buffer.length;
+                if (index > 0 && this.buffer[index - 4] != 0 /* Err */)
+                    while (index > 0 && this.buffer[index - 2] > end) {
+                        // Move this record forward
+                        this.buffer[index] = this.buffer[index - 4];
+                        this.buffer[index + 1] = this.buffer[index - 3];
+                        this.buffer[index + 2] = this.buffer[index - 2];
+                        this.buffer[index + 3] = this.buffer[index - 1];
+                        index -= 4;
+                        if (size > 4)
+                            size -= 4;
+                    }
+                this.buffer[index] = term;
+                this.buffer[index + 1] = start;
+                this.buffer[index + 2] = end;
+                this.buffer[index + 3] = size;
+            }
+        }
+        // Apply a shift action
+        /// @internal
+        shift(action, next, nextEnd) {
+            let start = this.pos;
+            if (action & 131072 /* GotoFlag */) {
+                this.pushState(action & 65535 /* ValueMask */, this.pos);
+            }
+            else if ((action & 262144 /* StayFlag */) == 0) { // Regular shift
+                let nextState = action, { parser } = this.p;
+                if (nextEnd > this.pos || next <= parser.maxNode) {
+                    this.pos = nextEnd;
+                    if (!parser.stateFlag(nextState, 1 /* Skipped */))
+                        this.reducePos = nextEnd;
+                }
+                this.pushState(nextState, start);
+                this.shiftContext(next, start);
+                if (next <= parser.maxNode)
+                    this.buffer.push(next, start, nextEnd, 4);
+            }
+            else { // Shift-and-stay, which means this is a skipped token
+                this.pos = nextEnd;
+                this.shiftContext(next, start);
+                if (next <= this.p.parser.maxNode)
+                    this.buffer.push(next, start, nextEnd, 4);
+            }
+        }
+        // Apply an action
+        /// @internal
+        apply(action, next, nextEnd) {
+            if (action & 65536 /* ReduceFlag */)
+                this.reduce(action);
+            else
+                this.shift(action, next, nextEnd);
+        }
+        // Add a prebuilt (reused) node into the buffer. @internal
+        useNode(value, next) {
+            let index = this.p.reused.length - 1;
+            if (index < 0 || this.p.reused[index] != value) {
+                this.p.reused.push(value);
+                index++;
+            }
+            let start = this.pos;
+            this.reducePos = this.pos = start + value.length;
+            this.pushState(next, start);
+            this.buffer.push(index, start, this.reducePos, -1 /* size == -1 means this is a reused value */);
+            if (this.curContext)
+                this.updateContext(this.curContext.tracker.reuse(this.curContext.context, value, this, this.p.stream.reset(this.pos - value.length)));
+        }
+        // Split the stack. Due to the buffer sharing and the fact
+        // that `this.stack` tends to stay quite shallow, this isn't very
+        // expensive.
+        /// @internal
+        split() {
+            let parent = this;
+            let off = parent.buffer.length;
+            // Because the top of the buffer (after this.pos) may be mutated
+            // to reorder reductions and skipped tokens, and shared buffers
+            // should be immutable, this copies any outstanding skipped tokens
+            // to the new buffer, and puts the base pointer before them.
+            while (off > 0 && parent.buffer[off - 2] > parent.reducePos)
+                off -= 4;
+            let buffer = parent.buffer.slice(off), base = parent.bufferBase + off;
+            // Make sure parent points to an actual parent with content, if there is such a parent.
+            while (parent && base == parent.bufferBase)
+                parent = parent.parent;
+            return new Stack(this.p, this.stack.slice(), this.state, this.reducePos, this.pos, this.score, buffer, base, this.curContext, this.lookAhead, parent);
+        }
+        // Try to recover from an error by 'deleting' (ignoring) one token.
+        /// @internal
+        recoverByDelete(next, nextEnd) {
+            let isNode = next <= this.p.parser.maxNode;
+            if (isNode)
+                this.storeNode(next, this.pos, nextEnd, 4);
+            this.storeNode(0 /* Err */, this.pos, nextEnd, isNode ? 8 : 4);
+            this.pos = this.reducePos = nextEnd;
+            this.score -= 190 /* Delete */;
+        }
+        /// Check if the given term would be able to be shifted (optionally
+        /// after some reductions) on this stack. This can be useful for
+        /// external tokenizers that want to make sure they only provide a
+        /// given token when it applies.
+        canShift(term) {
+            for (let sim = new SimulatedStack(this);;) {
+                let action = this.p.parser.stateSlot(sim.state, 4 /* DefaultReduce */) || this.p.parser.hasAction(sim.state, term);
+                if ((action & 65536 /* ReduceFlag */) == 0)
+                    return true;
+                if (action == 0)
+                    return false;
+                sim.reduce(action);
+            }
+        }
+        // Apply up to Recover.MaxNext recovery actions that conceptually
+        // inserts some missing token or rule.
+        /// @internal
+        recoverByInsert(next) {
+            if (this.stack.length >= 300 /* MaxInsertStackDepth */)
+                return [];
+            let nextStates = this.p.parser.nextStates(this.state);
+            if (nextStates.length > 4 /* MaxNext */ << 1 || this.stack.length >= 120 /* DampenInsertStackDepth */) {
+                let best = [];
+                for (let i = 0, s; i < nextStates.length; i += 2) {
+                    if ((s = nextStates[i + 1]) != this.state && this.p.parser.hasAction(s, next))
+                        best.push(nextStates[i], s);
+                }
+                if (this.stack.length < 120 /* DampenInsertStackDepth */)
+                    for (let i = 0; best.length < 4 /* MaxNext */ << 1 && i < nextStates.length; i += 2) {
+                        let s = nextStates[i + 1];
+                        if (!best.some((v, i) => (i & 1) && v == s))
+                            best.push(nextStates[i], s);
+                    }
+                nextStates = best;
+            }
+            let result = [];
+            for (let i = 0; i < nextStates.length && result.length < 4 /* MaxNext */; i += 2) {
+                let s = nextStates[i + 1];
+                if (s == this.state)
+                    continue;
+                let stack = this.split();
+                stack.storeNode(0 /* Err */, stack.pos, stack.pos, 4, true);
+                stack.pushState(s, this.pos);
+                stack.shiftContext(nextStates[i], this.pos);
+                stack.score -= 200 /* Insert */;
+                result.push(stack);
+            }
+            return result;
+        }
+        // Force a reduce, if possible. Return false if that can't
+        // be done.
+        /// @internal
+        forceReduce() {
+            let reduce = this.p.parser.stateSlot(this.state, 5 /* ForcedReduce */);
+            if ((reduce & 65536 /* ReduceFlag */) == 0)
+                return false;
+            let { parser } = this.p;
+            if (!parser.validAction(this.state, reduce)) {
+                let depth = reduce >> 19 /* ReduceDepthShift */, term = reduce & 65535 /* ValueMask */;
+                let target = this.stack.length - depth * 3;
+                if (target < 0 || parser.getGoto(this.stack[target], term, false) < 0)
+                    return false;
+                this.storeNode(0 /* Err */, this.reducePos, this.reducePos, 4, true);
+                this.score -= 100 /* Reduce */;
+            }
+            this.reduce(reduce);
+            return true;
+        }
+        /// @internal
+        forceAll() {
+            while (!this.p.parser.stateFlag(this.state, 2 /* Accepting */) && this.forceReduce()) { }
+            return this;
+        }
+        /// Check whether this state has no further actions (assumed to be a direct descendant of the
+        /// top state, since any other states must be able to continue
+        /// somehow). @internal
+        get deadEnd() {
+            if (this.stack.length != 3)
+                return false;
+            let { parser } = this.p;
+            return parser.data[parser.stateSlot(this.state, 1 /* Actions */)] == 65535 /* End */ &&
+                !parser.stateSlot(this.state, 4 /* DefaultReduce */);
+        }
+        /// Restart the stack (put it back in its start state). Only safe
+        /// when this.stack.length == 3 (state is directly below the top
+        /// state). @internal
+        restart() {
+            this.state = this.stack[0];
+            this.stack.length = 0;
+        }
+        /// @internal
+        sameState(other) {
+            if (this.state != other.state || this.stack.length != other.stack.length)
+                return false;
+            for (let i = 0; i < this.stack.length; i += 3)
+                if (this.stack[i] != other.stack[i])
+                    return false;
+            return true;
+        }
+        /// Get the parser used by this stack.
+        get parser() { return this.p.parser; }
+        /// Test whether a given dialect (by numeric ID, as exported from
+        /// the terms file) is enabled.
+        dialectEnabled(dialectID) { return this.p.parser.dialect.flags[dialectID]; }
+        shiftContext(term, start) {
+            if (this.curContext)
+                this.updateContext(this.curContext.tracker.shift(this.curContext.context, term, this, this.p.stream.reset(start)));
+        }
+        reduceContext(term, start) {
+            if (this.curContext)
+                this.updateContext(this.curContext.tracker.reduce(this.curContext.context, term, this, this.p.stream.reset(start)));
+        }
+        /// @internal
+        emitContext() {
+            let last = this.buffer.length - 1;
+            if (last < 0 || this.buffer[last] != -3)
+                this.buffer.push(this.curContext.hash, this.reducePos, this.reducePos, -3);
+        }
+        /// @internal
+        emitLookAhead() {
+            let last = this.buffer.length - 1;
+            if (last < 0 || this.buffer[last] != -4)
+                this.buffer.push(this.lookAhead, this.reducePos, this.reducePos, -4);
+        }
+        updateContext(context) {
+            if (context != this.curContext.context) {
+                let newCx = new StackContext(this.curContext.tracker, context);
+                if (newCx.hash != this.curContext.hash)
+                    this.emitContext();
+                this.curContext = newCx;
+            }
+        }
+        /// @internal
+        setLookAhead(lookAhead) {
+            if (lookAhead > this.lookAhead) {
+                this.emitLookAhead();
+                this.lookAhead = lookAhead;
+            }
+        }
+        /// @internal
+        close() {
+            if (this.curContext && this.curContext.tracker.strict)
+                this.emitContext();
+            if (this.lookAhead > 0)
+                this.emitLookAhead();
+        }
+    }
+    class StackContext {
+        constructor(tracker, context) {
+            this.tracker = tracker;
+            this.context = context;
+            this.hash = tracker.strict ? tracker.hash(context) : 0;
+        }
+    }
+    var Recover;
+    (function (Recover) {
+        Recover[Recover["Insert"] = 200] = "Insert";
+        Recover[Recover["Delete"] = 190] = "Delete";
+        Recover[Recover["Reduce"] = 100] = "Reduce";
+        Recover[Recover["MaxNext"] = 4] = "MaxNext";
+        Recover[Recover["MaxInsertStackDepth"] = 300] = "MaxInsertStackDepth";
+        Recover[Recover["DampenInsertStackDepth"] = 120] = "DampenInsertStackDepth";
+    })(Recover || (Recover = {}));
+    // Used to cheaply run some reductions to scan ahead without mutating
+    // an entire stack
+    class SimulatedStack {
+        constructor(start) {
+            this.start = start;
+            this.state = start.state;
+            this.stack = start.stack;
+            this.base = this.stack.length;
+        }
+        reduce(action) {
+            let term = action & 65535 /* ValueMask */, depth = action >> 19 /* ReduceDepthShift */;
+            if (depth == 0) {
+                if (this.stack == this.start.stack)
+                    this.stack = this.stack.slice();
+                this.stack.push(this.state, 0, 0);
+                this.base += 3;
+            }
+            else {
+                this.base -= (depth - 1) * 3;
+            }
+            let goto = this.start.p.parser.getGoto(this.stack[this.base - 3], term, true);
+            this.state = goto;
+        }
+    }
+    // This is given to `Tree.build` to build a buffer, and encapsulates
+    // the parent-stack-walking necessary to read the nodes.
+    class StackBufferCursor {
+        constructor(stack, pos, index) {
+            this.stack = stack;
+            this.pos = pos;
+            this.index = index;
+            this.buffer = stack.buffer;
+            if (this.index == 0)
+                this.maybeNext();
+        }
+        static create(stack, pos = stack.bufferBase + stack.buffer.length) {
+            return new StackBufferCursor(stack, pos, pos - stack.bufferBase);
+        }
+        maybeNext() {
+            let next = this.stack.parent;
+            if (next != null) {
+                this.index = this.stack.bufferBase - next.bufferBase;
+                this.stack = next;
+                this.buffer = next.buffer;
+            }
+        }
+        get id() { return this.buffer[this.index - 4]; }
+        get start() { return this.buffer[this.index - 3]; }
+        get end() { return this.buffer[this.index - 2]; }
+        get size() { return this.buffer[this.index - 1]; }
+        next() {
+            this.index -= 4;
+            this.pos -= 4;
+            if (this.index == 0)
+                this.maybeNext();
+        }
+        fork() {
+            return new StackBufferCursor(this.stack, this.pos, this.index);
+        }
+    }
+
+    class CachedToken {
+        constructor() {
+            this.start = -1;
+            this.value = -1;
+            this.end = -1;
+            this.extended = -1;
+            this.lookAhead = 0;
+            this.mask = 0;
+            this.context = 0;
+        }
+    }
+    const nullToken = new CachedToken;
+    /// [Tokenizers](#lr.ExternalTokenizer) interact with the input
+    /// through this interface. It presents the input as a stream of
+    /// characters, tracking lookahead and hiding the complexity of
+    /// [ranges](#common.Parser.parse^ranges) from tokenizer code.
+    class InputStream {
+        /// @internal
+        constructor(
+        /// @internal
+        input, 
+        /// @internal
+        ranges) {
+            this.input = input;
+            this.ranges = ranges;
+            /// @internal
+            this.chunk = "";
+            /// @internal
+            this.chunkOff = 0;
+            /// Backup chunk
+            this.chunk2 = "";
+            this.chunk2Pos = 0;
+            /// The character code of the next code unit in the input, or -1
+            /// when the stream is at the end of the input.
+            this.next = -1;
+            /// @internal
+            this.token = nullToken;
+            this.rangeIndex = 0;
+            this.pos = this.chunkPos = ranges[0].from;
+            this.range = ranges[0];
+            this.end = ranges[ranges.length - 1].to;
+            this.readNext();
+        }
+        resolveOffset(offset, assoc) {
+            let range = this.range, index = this.rangeIndex;
+            let pos = this.pos + offset;
+            while (pos < range.from) {
+                if (!index)
+                    return null;
+                let next = this.ranges[--index];
+                pos -= range.from - next.to;
+                range = next;
+            }
+            while (assoc < 0 ? pos > range.to : pos >= range.to) {
+                if (index == this.ranges.length - 1)
+                    return null;
+                let next = this.ranges[++index];
+                pos += next.from - range.to;
+                range = next;
+            }
+            return pos;
+        }
+        /// Look at a code unit near the stream position. `.peek(0)` equals
+        /// `.next`, `.peek(-1)` gives you the previous character, and so
+        /// on.
+        ///
+        /// Note that looking around during tokenizing creates dependencies
+        /// on potentially far-away content, which may reduce the
+        /// effectiveness incremental parsing—when looking forward—or even
+        /// cause invalid reparses when looking backward more than 25 code
+        /// units, since the library does not track lookbehind.
+        peek(offset) {
+            let idx = this.chunkOff + offset, pos, result;
+            if (idx >= 0 && idx < this.chunk.length) {
+                pos = this.pos + offset;
+                result = this.chunk.charCodeAt(idx);
+            }
+            else {
+                let resolved = this.resolveOffset(offset, 1);
+                if (resolved == null)
+                    return -1;
+                pos = resolved;
+                if (pos >= this.chunk2Pos && pos < this.chunk2Pos + this.chunk2.length) {
+                    result = this.chunk2.charCodeAt(pos - this.chunk2Pos);
+                }
+                else {
+                    let i = this.rangeIndex, range = this.range;
+                    while (range.to <= pos)
+                        range = this.ranges[++i];
+                    this.chunk2 = this.input.chunk(this.chunk2Pos = pos);
+                    if (pos + this.chunk2.length > range.to)
+                        this.chunk2 = this.chunk2.slice(0, range.to - pos);
+                    result = this.chunk2.charCodeAt(0);
+                }
+            }
+            if (pos > this.token.lookAhead)
+                this.token.lookAhead = pos;
+            return result;
+        }
+        /// Accept a token. By default, the end of the token is set to the
+        /// current stream position, but you can pass an offset (relative to
+        /// the stream position) to change that.
+        acceptToken(token, endOffset = 0) {
+            let end = endOffset ? this.resolveOffset(endOffset, -1) : this.pos;
+            if (end == null || end < this.token.start)
+                throw new RangeError("Token end out of bounds");
+            this.token.value = token;
+            this.token.end = end;
+        }
+        getChunk() {
+            if (this.pos >= this.chunk2Pos && this.pos < this.chunk2Pos + this.chunk2.length) {
+                let { chunk, chunkPos } = this;
+                this.chunk = this.chunk2;
+                this.chunkPos = this.chunk2Pos;
+                this.chunk2 = chunk;
+                this.chunk2Pos = chunkPos;
+                this.chunkOff = this.pos - this.chunkPos;
+            }
+            else {
+                this.chunk2 = this.chunk;
+                this.chunk2Pos = this.chunkPos;
+                let nextChunk = this.input.chunk(this.pos);
+                let end = this.pos + nextChunk.length;
+                this.chunk = end > this.range.to ? nextChunk.slice(0, this.range.to - this.pos) : nextChunk;
+                this.chunkPos = this.pos;
+                this.chunkOff = 0;
+            }
+        }
+        readNext() {
+            if (this.chunkOff >= this.chunk.length) {
+                this.getChunk();
+                if (this.chunkOff == this.chunk.length)
+                    return this.next = -1;
+            }
+            return this.next = this.chunk.charCodeAt(this.chunkOff);
+        }
+        /// Move the stream forward N (defaults to 1) code units. Returns
+        /// the new value of [`next`](#lr.InputStream.next).
+        advance(n = 1) {
+            this.chunkOff += n;
+            while (this.pos + n >= this.range.to) {
+                if (this.rangeIndex == this.ranges.length - 1)
+                    return this.setDone();
+                n -= this.range.to - this.pos;
+                this.range = this.ranges[++this.rangeIndex];
+                this.pos = this.range.from;
+            }
+            this.pos += n;
+            if (this.pos > this.token.lookAhead)
+                this.token.lookAhead = this.pos;
+            return this.readNext();
+        }
+        setDone() {
+            this.pos = this.chunkPos = this.end;
+            this.range = this.ranges[this.rangeIndex = this.ranges.length - 1];
+            this.chunk = "";
+            return this.next = -1;
+        }
+        /// @internal
+        reset(pos, token) {
+            if (token) {
+                this.token = token;
+                token.start = token.lookAhead = pos;
+                token.value = token.extended = -1;
+            }
+            else {
+                this.token = nullToken;
+            }
+            if (this.pos != pos) {
+                this.pos = pos;
+                if (pos == this.end) {
+                    this.setDone();
+                    return this;
+                }
+                while (pos < this.range.from)
+                    this.range = this.ranges[--this.rangeIndex];
+                while (pos >= this.range.to)
+                    this.range = this.ranges[++this.rangeIndex];
+                if (pos >= this.chunkPos && pos < this.chunkPos + this.chunk.length) {
+                    this.chunkOff = pos - this.chunkPos;
+                }
+                else {
+                    this.chunk = "";
+                    this.chunkOff = 0;
+                }
+                this.readNext();
+            }
+            return this;
+        }
+        /// @internal
+        read(from, to) {
+            if (from >= this.chunkPos && to <= this.chunkPos + this.chunk.length)
+                return this.chunk.slice(from - this.chunkPos, to - this.chunkPos);
+            if (from >= this.range.from && to <= this.range.to)
+                return this.input.read(from, to);
+            let result = "";
+            for (let r of this.ranges) {
+                if (r.from >= to)
+                    break;
+                if (r.to > from)
+                    result += this.input.read(Math.max(r.from, from), Math.min(r.to, to));
+            }
+            return result;
+        }
+    }
+    /// @internal
+    class TokenGroup {
+        constructor(data, id) {
+            this.data = data;
+            this.id = id;
+        }
+        token(input, stack) { readToken(this.data, input, stack, this.id); }
+    }
+    TokenGroup.prototype.contextual = TokenGroup.prototype.fallback = TokenGroup.prototype.extend = false;
+    // Tokenizer data is stored a big uint16 array containing, for each
+    // state:
+    //
+    //  - A group bitmask, indicating what token groups are reachable from
+    //    this state, so that paths that can only lead to tokens not in
+    //    any of the current groups can be cut off early.
+    //
+    //  - The position of the end of the state's sequence of accepting
+    //    tokens
+    //
+    //  - The number of outgoing edges for the state
+    //
+    //  - The accepting tokens, as (token id, group mask) pairs
+    //
+    //  - The outgoing edges, as (start character, end character, state
+    //    index) triples, with end character being exclusive
+    //
+    // This function interprets that data, running through a stream as
+    // long as new states with the a matching group mask can be reached,
+    // and updating `token` when it matches a token.
+    function readToken(data, input, stack, group) {
+        let state = 0, groupMask = 1 << group, { parser } = stack.p, { dialect } = parser;
+        scan: for (;;) {
+            if ((groupMask & data[state]) == 0)
+                break;
+            let accEnd = data[state + 1];
+            // Check whether this state can lead to a token in the current group
+            // Accept tokens in this state, possibly overwriting
+            // lower-precedence / shorter tokens
+            for (let i = state + 3; i < accEnd; i += 2)
+                if ((data[i + 1] & groupMask) > 0) {
+                    let term = data[i];
+                    if (dialect.allows(term) &&
+                        (input.token.value == -1 || input.token.value == term || parser.overrides(term, input.token.value))) {
+                        input.acceptToken(term);
+                        break;
+                    }
+                }
+            // Do a binary search on the state's edges
+            for (let next = input.next, low = 0, high = data[state + 2]; low < high;) {
+                let mid = (low + high) >> 1;
+                let index = accEnd + mid + (mid << 1);
+                let from = data[index], to = data[index + 1];
+                if (next < from)
+                    high = mid;
+                else if (next >= to)
+                    low = mid + 1;
+                else {
+                    state = data[index + 2];
+                    input.advance();
+                    continue scan;
+                }
+            }
+            break;
+        }
+    }
+
+    // See lezer-generator/src/encode.ts for comments about the encoding
+    // used here
+    function decodeArray(input, Type = Uint16Array) {
+        if (typeof input != "string")
+            return input;
+        let array = null;
+        for (let pos = 0, out = 0; pos < input.length;) {
+            let value = 0;
+            for (;;) {
+                let next = input.charCodeAt(pos++), stop = false;
+                if (next == 126 /* BigValCode */) {
+                    value = 65535 /* BigVal */;
+                    break;
+                }
+                if (next >= 92 /* Gap2 */)
+                    next--;
+                if (next >= 34 /* Gap1 */)
+                    next--;
+                let digit = next - 32 /* Start */;
+                if (digit >= 46 /* Base */) {
+                    digit -= 46 /* Base */;
+                    stop = true;
+                }
+                value += digit;
+                if (stop)
+                    break;
+                value *= 46 /* Base */;
+            }
+            if (array)
+                array[out++] = value;
+            else
+                array = new Type(value);
+        }
+        return array;
+    }
+
+    // FIXME find some way to reduce recovery work done when the input
+    // doesn't match the grammar at all.
+    // Environment variable used to control console output
+    const verbose = typeof process != "undefined" && /\bparse\b/.test(process.env.LOG);
+    let stackIDs = null;
+    var Safety;
+    (function (Safety) {
+        Safety[Safety["Margin"] = 25] = "Margin";
+    })(Safety || (Safety = {}));
+    function cutAt(tree, pos, side) {
+        let cursor = tree.fullCursor();
+        cursor.moveTo(pos);
+        for (;;) {
+            if (!(side < 0 ? cursor.childBefore(pos) : cursor.childAfter(pos)))
+                for (;;) {
+                    if ((side < 0 ? cursor.to < pos : cursor.from > pos) && !cursor.type.isError)
+                        return side < 0 ? Math.max(0, Math.min(cursor.to - 1, pos - 25 /* Margin */))
+                            : Math.min(tree.length, Math.max(cursor.from + 1, pos + 25 /* Margin */));
+                    if (side < 0 ? cursor.prevSibling() : cursor.nextSibling())
+                        break;
+                    if (!cursor.parent())
+                        return side < 0 ? 0 : tree.length;
+                }
+        }
+    }
+    class FragmentCursor {
+        constructor(fragments, nodeSet) {
+            this.fragments = fragments;
+            this.nodeSet = nodeSet;
+            this.i = 0;
+            this.fragment = null;
+            this.safeFrom = -1;
+            this.safeTo = -1;
+            this.trees = [];
+            this.start = [];
+            this.index = [];
+            this.nextFragment();
+        }
+        nextFragment() {
+            let fr = this.fragment = this.i == this.fragments.length ? null : this.fragments[this.i++];
+            if (fr) {
+                this.safeFrom = fr.openStart ? cutAt(fr.tree, fr.from + fr.offset, 1) - fr.offset : fr.from;
+                this.safeTo = fr.openEnd ? cutAt(fr.tree, fr.to + fr.offset, -1) - fr.offset : fr.to;
+                while (this.trees.length) {
+                    this.trees.pop();
+                    this.start.pop();
+                    this.index.pop();
+                }
+                this.trees.push(fr.tree);
+                this.start.push(-fr.offset);
+                this.index.push(0);
+                this.nextStart = this.safeFrom;
+            }
+            else {
+                this.nextStart = 1e9;
+            }
+        }
+        // `pos` must be >= any previously given `pos` for this cursor
+        nodeAt(pos) {
+            if (pos < this.nextStart)
+                return null;
+            while (this.fragment && this.safeTo <= pos)
+                this.nextFragment();
+            if (!this.fragment)
+                return null;
+            for (;;) {
+                let last = this.trees.length - 1;
+                if (last < 0) { // End of tree
+                    this.nextFragment();
+                    return null;
+                }
+                let top = this.trees[last], index = this.index[last];
+                if (index == top.children.length) {
+                    this.trees.pop();
+                    this.start.pop();
+                    this.index.pop();
+                    continue;
+                }
+                let next = top.children[index];
+                let start = this.start[last] + top.positions[index];
+                if (start > pos) {
+                    this.nextStart = start;
+                    return null;
+                }
+                if (next instanceof Tree) {
+                    if (start == pos) {
+                        if (start < this.safeFrom)
+                            return null;
+                        let end = start + next.length;
+                        if (end <= this.safeTo) {
+                            let lookAhead = next.prop(NodeProp.lookAhead);
+                            if (!lookAhead || end + lookAhead < this.fragment.to)
+                                return next;
+                        }
+                    }
+                    this.index[last]++;
+                    if (start + next.length >= Math.max(this.safeFrom, pos)) { // Enter this node
+                        this.trees.push(next);
+                        this.start.push(start);
+                        this.index.push(0);
+                    }
+                }
+                else {
+                    this.index[last]++;
+                    this.nextStart = start + next.length;
+                }
+            }
+        }
+    }
+    class TokenCache {
+        constructor(parser, stream) {
+            this.stream = stream;
+            this.tokens = [];
+            this.mainToken = null;
+            this.actions = [];
+            this.tokens = parser.tokenizers.map(_ => new CachedToken);
+        }
+        getActions(stack) {
+            let actionIndex = 0;
+            let main = null;
+            let { parser } = stack.p, { tokenizers } = parser;
+            let mask = parser.stateSlot(stack.state, 3 /* TokenizerMask */);
+            let context = stack.curContext ? stack.curContext.hash : 0;
+            let lookAhead = 0;
+            for (let i = 0; i < tokenizers.length; i++) {
+                if (((1 << i) & mask) == 0)
+                    continue;
+                let tokenizer = tokenizers[i], token = this.tokens[i];
+                if (main && !tokenizer.fallback)
+                    continue;
+                if (tokenizer.contextual || token.start != stack.pos || token.mask != mask || token.context != context) {
+                    this.updateCachedToken(token, tokenizer, stack);
+                    token.mask = mask;
+                    token.context = context;
+                }
+                if (token.lookAhead > token.end + 25 /* Margin */)
+                    lookAhead = Math.max(token.lookAhead, lookAhead);
+                if (token.value != 0 /* Err */) {
+                    let startIndex = actionIndex;
+                    if (token.extended > -1)
+                        actionIndex = this.addActions(stack, token.extended, token.end, actionIndex);
+                    actionIndex = this.addActions(stack, token.value, token.end, actionIndex);
+                    if (!tokenizer.extend) {
+                        main = token;
+                        if (actionIndex > startIndex)
+                            break;
+                    }
+                }
+            }
+            while (this.actions.length > actionIndex)
+                this.actions.pop();
+            if (lookAhead)
+                stack.setLookAhead(lookAhead);
+            if (!main && stack.pos == this.stream.end) {
+                main = new CachedToken;
+                main.value = stack.p.parser.eofTerm;
+                main.start = main.end = stack.pos;
+                actionIndex = this.addActions(stack, main.value, main.end, actionIndex);
+            }
+            this.mainToken = main;
+            return this.actions;
+        }
+        getMainToken(stack) {
+            if (this.mainToken)
+                return this.mainToken;
+            let main = new CachedToken, { pos, p } = stack;
+            main.start = pos;
+            main.end = Math.min(pos + 1, p.stream.end);
+            main.value = pos == p.stream.end ? p.parser.eofTerm : 0 /* Err */;
+            return main;
+        }
+        updateCachedToken(token, tokenizer, stack) {
+            tokenizer.token(this.stream.reset(stack.pos, token), stack);
+            if (token.value > -1) {
+                let { parser } = stack.p;
+                for (let i = 0; i < parser.specialized.length; i++)
+                    if (parser.specialized[i] == token.value) {
+                        let result = parser.specializers[i](this.stream.read(token.start, token.end), stack);
+                        if (result >= 0 && stack.p.parser.dialect.allows(result >> 1)) {
+                            if ((result & 1) == 0 /* Specialize */)
+                                token.value = result >> 1;
+                            else
+                                token.extended = result >> 1;
+                            break;
+                        }
+                    }
+            }
+            else {
+                token.value = 0 /* Err */;
+                token.end = Math.min(stack.p.stream.end, stack.pos + 1);
+            }
+        }
+        putAction(action, token, end, index) {
+            // Don't add duplicate actions
+            for (let i = 0; i < index; i += 3)
+                if (this.actions[i] == action)
+                    return index;
+            this.actions[index++] = action;
+            this.actions[index++] = token;
+            this.actions[index++] = end;
+            return index;
+        }
+        addActions(stack, token, end, index) {
+            let { state } = stack, { parser } = stack.p, { data } = parser;
+            for (let set = 0; set < 2; set++) {
+                for (let i = parser.stateSlot(state, set ? 2 /* Skip */ : 1 /* Actions */);; i += 3) {
+                    if (data[i] == 65535 /* End */) {
+                        if (data[i + 1] == 1 /* Next */) {
+                            i = pair(data, i + 2);
+                        }
+                        else {
+                            if (index == 0 && data[i + 1] == 2 /* Other */)
+                                index = this.putAction(pair(data, i + 1), token, end, index);
+                            break;
+                        }
+                    }
+                    if (data[i] == token)
+                        index = this.putAction(pair(data, i + 1), token, end, index);
+                }
+            }
+            return index;
+        }
+    }
+    var Rec;
+    (function (Rec) {
+        Rec[Rec["Distance"] = 5] = "Distance";
+        Rec[Rec["MaxRemainingPerStep"] = 3] = "MaxRemainingPerStep";
+        Rec[Rec["MinBufferLengthPrune"] = 200] = "MinBufferLengthPrune";
+        Rec[Rec["ForceReduceLimit"] = 10] = "ForceReduceLimit";
+    })(Rec || (Rec = {}));
+    class Parse {
+        constructor(parser, input, fragments, ranges) {
+            this.parser = parser;
+            this.input = input;
+            this.ranges = ranges;
+            this.recovering = 0;
+            this.nextStackID = 0x2654;
+            this.minStackPos = 0;
+            this.reused = [];
+            this.stoppedAt = null;
+            this.stream = new InputStream(input, ranges);
+            this.tokens = new TokenCache(parser, this.stream);
+            this.topTerm = parser.top[1];
+            let { from } = ranges[0];
+            this.stacks = [Stack.start(this, parser.top[0], from)];
+            this.fragments = fragments.length && this.stream.end - from > parser.bufferLength * 4
+                ? new FragmentCursor(fragments, parser.nodeSet) : null;
+        }
+        get parsedPos() {
+            return this.minStackPos;
+        }
+        // Move the parser forward. This will process all parse stacks at
+        // `this.pos` and try to advance them to a further position. If no
+        // stack for such a position is found, it'll start error-recovery.
+        //
+        // When the parse is finished, this will return a syntax tree. When
+        // not, it returns `null`.
+        advance() {
+            let stacks = this.stacks, pos = this.minStackPos;
+            // This will hold stacks beyond `pos`.
+            let newStacks = this.stacks = [];
+            let stopped, stoppedTokens;
+            // Keep advancing any stacks at `pos` until they either move
+            // forward or can't be advanced. Gather stacks that can't be
+            // advanced further in `stopped`.
+            for (let i = 0; i < stacks.length; i++) {
+                let stack = stacks[i];
+                for (;;) {
+                    this.tokens.mainToken = null;
+                    if (stack.pos > pos) {
+                        newStacks.push(stack);
+                    }
+                    else if (this.advanceStack(stack, newStacks, stacks)) {
+                        continue;
+                    }
+                    else {
+                        if (!stopped) {
+                            stopped = [];
+                            stoppedTokens = [];
+                        }
+                        stopped.push(stack);
+                        let tok = this.tokens.getMainToken(stack);
+                        stoppedTokens.push(tok.value, tok.end);
+                    }
+                    break;
+                }
+            }
+            if (!newStacks.length) {
+                let finished = stopped && findFinished(stopped);
+                if (finished)
+                    return this.stackToTree(finished);
+                if (this.parser.strict) {
+                    if (verbose && stopped)
+                        console.log("Stuck with token " + (this.tokens.mainToken ? this.parser.getName(this.tokens.mainToken.value) : "none"));
+                    throw new SyntaxError("No parse at " + pos);
+                }
+                if (!this.recovering)
+                    this.recovering = 5 /* Distance */;
+            }
+            if (this.recovering && stopped) {
+                let finished = this.runRecovery(stopped, stoppedTokens, newStacks);
+                if (finished)
+                    return this.stackToTree(finished.forceAll());
+            }
+            if (this.recovering) {
+                let maxRemaining = this.recovering == 1 ? 1 : this.recovering * 3 /* MaxRemainingPerStep */;
+                if (newStacks.length > maxRemaining) {
+                    newStacks.sort((a, b) => b.score - a.score);
+                    while (newStacks.length > maxRemaining)
+                        newStacks.pop();
+                }
+                if (newStacks.some(s => s.reducePos > pos))
+                    this.recovering--;
+            }
+            else if (newStacks.length > 1) {
+                // Prune stacks that are in the same state, or that have been
+                // running without splitting for a while, to avoid getting stuck
+                // with multiple successful stacks running endlessly on.
+                outer: for (let i = 0; i < newStacks.length - 1; i++) {
+                    let stack = newStacks[i];
+                    for (let j = i + 1; j < newStacks.length; j++) {
+                        let other = newStacks[j];
+                        if (stack.sameState(other) ||
+                            stack.buffer.length > 200 /* MinBufferLengthPrune */ && other.buffer.length > 200 /* MinBufferLengthPrune */) {
+                            if (((stack.score - other.score) || (stack.buffer.length - other.buffer.length)) > 0) {
+                                newStacks.splice(j--, 1);
+                            }
+                            else {
+                                newStacks.splice(i--, 1);
+                                continue outer;
+                            }
+                        }
+                    }
+                }
+            }
+            this.minStackPos = newStacks[0].pos;
+            for (let i = 1; i < newStacks.length; i++)
+                if (newStacks[i].pos < this.minStackPos)
+                    this.minStackPos = newStacks[i].pos;
+            return null;
+        }
+        stopAt(pos) {
+            if (this.stoppedAt != null && this.stoppedAt < pos)
+                throw new RangeError("Can't move stoppedAt forward");
+            this.stoppedAt = pos;
+        }
+        // Returns an updated version of the given stack, or null if the
+        // stack can't advance normally. When `split` and `stacks` are
+        // given, stacks split off by ambiguous operations will be pushed to
+        // `split`, or added to `stacks` if they move `pos` forward.
+        advanceStack(stack, stacks, split) {
+            let start = stack.pos, { parser } = this;
+            let base = verbose ? this.stackID(stack) + " -> " : "";
+            if (this.stoppedAt != null && start > this.stoppedAt)
+                return stack.forceReduce() ? stack : null;
+            if (this.fragments) {
+                let strictCx = stack.curContext && stack.curContext.tracker.strict, cxHash = strictCx ? stack.curContext.hash : 0;
+                for (let cached = this.fragments.nodeAt(start); cached;) {
+                    let match = this.parser.nodeSet.types[cached.type.id] == cached.type ? parser.getGoto(stack.state, cached.type.id) : -1;
+                    if (match > -1 && cached.length && (!strictCx || (cached.prop(NodeProp.contextHash) || 0) == cxHash)) {
+                        stack.useNode(cached, match);
+                        if (verbose)
+                            console.log(base + this.stackID(stack) + ` (via reuse of ${parser.getName(cached.type.id)})`);
+                        return true;
+                    }
+                    if (!(cached instanceof Tree) || cached.children.length == 0 || cached.positions[0] > 0)
+                        break;
+                    let inner = cached.children[0];
+                    if (inner instanceof Tree && cached.positions[0] == 0)
+                        cached = inner;
+                    else
+                        break;
+                }
+            }
+            let defaultReduce = parser.stateSlot(stack.state, 4 /* DefaultReduce */);
+            if (defaultReduce > 0) {
+                stack.reduce(defaultReduce);
+                if (verbose)
+                    console.log(base + this.stackID(stack) + ` (via always-reduce ${parser.getName(defaultReduce & 65535 /* ValueMask */)})`);
+                return true;
+            }
+            let actions = this.tokens.getActions(stack);
+            for (let i = 0; i < actions.length;) {
+                let action = actions[i++], term = actions[i++], end = actions[i++];
+                let last = i == actions.length || !split;
+                let localStack = last ? stack : stack.split();
+                localStack.apply(action, term, end);
+                if (verbose)
+                    console.log(base + this.stackID(localStack) + ` (via ${(action & 65536 /* ReduceFlag */) == 0 ? "shift"
+                    : `reduce of ${parser.getName(action & 65535 /* ValueMask */)}`} for ${parser.getName(term)} @ ${start}${localStack == stack ? "" : ", split"})`);
+                if (last)
+                    return true;
+                else if (localStack.pos > start)
+                    stacks.push(localStack);
+                else
+                    split.push(localStack);
+            }
+            return false;
+        }
+        // Advance a given stack forward as far as it will go. Returns the
+        // (possibly updated) stack if it got stuck, or null if it moved
+        // forward and was given to `pushStackDedup`.
+        advanceFully(stack, newStacks) {
+            let pos = stack.pos;
+            for (;;) {
+                if (!this.advanceStack(stack, null, null))
+                    return false;
+                if (stack.pos > pos) {
+                    pushStackDedup(stack, newStacks);
+                    return true;
+                }
+            }
+        }
+        runRecovery(stacks, tokens, newStacks) {
+            let finished = null, restarted = false;
+            for (let i = 0; i < stacks.length; i++) {
+                let stack = stacks[i], token = tokens[i << 1], tokenEnd = tokens[(i << 1) + 1];
+                let base = verbose ? this.stackID(stack) + " -> " : "";
+                if (stack.deadEnd) {
+                    if (restarted)
+                        continue;
+                    restarted = true;
+                    stack.restart();
+                    if (verbose)
+                        console.log(base + this.stackID(stack) + " (restarted)");
+                    let done = this.advanceFully(stack, newStacks);
+                    if (done)
+                        continue;
+                }
+                let force = stack.split(), forceBase = base;
+                for (let j = 0; force.forceReduce() && j < 10 /* ForceReduceLimit */; j++) {
+                    if (verbose)
+                        console.log(forceBase + this.stackID(force) + " (via force-reduce)");
+                    let done = this.advanceFully(force, newStacks);
+                    if (done)
+                        break;
+                    if (verbose)
+                        forceBase = this.stackID(force) + " -> ";
+                }
+                for (let insert of stack.recoverByInsert(token)) {
+                    if (verbose)
+                        console.log(base + this.stackID(insert) + " (via recover-insert)");
+                    this.advanceFully(insert, newStacks);
+                }
+                if (this.stream.end > stack.pos) {
+                    if (tokenEnd == stack.pos) {
+                        tokenEnd++;
+                        token = 0 /* Err */;
+                    }
+                    stack.recoverByDelete(token, tokenEnd);
+                    if (verbose)
+                        console.log(base + this.stackID(stack) + ` (via recover-delete ${this.parser.getName(token)})`);
+                    pushStackDedup(stack, newStacks);
+                }
+                else if (!finished || finished.score < stack.score) {
+                    finished = stack;
+                }
+            }
+            return finished;
+        }
+        // Convert the stack's buffer to a syntax tree.
+        stackToTree(stack) {
+            stack.close();
+            return Tree.build({ buffer: StackBufferCursor.create(stack),
+                nodeSet: this.parser.nodeSet,
+                topID: this.topTerm,
+                maxBufferLength: this.parser.bufferLength,
+                reused: this.reused,
+                start: this.ranges[0].from,
+                length: stack.pos - this.ranges[0].from,
+                minRepeatType: this.parser.minRepeatTerm });
+        }
+        stackID(stack) {
+            let id = (stackIDs || (stackIDs = new WeakMap)).get(stack);
+            if (!id)
+                stackIDs.set(stack, id = String.fromCodePoint(this.nextStackID++));
+            return id + stack;
+        }
+    }
+    function pushStackDedup(stack, newStacks) {
+        for (let i = 0; i < newStacks.length; i++) {
+            let other = newStacks[i];
+            if (other.pos == stack.pos && other.sameState(stack)) {
+                if (newStacks[i].score < stack.score)
+                    newStacks[i] = stack;
+                return;
+            }
+        }
+        newStacks.push(stack);
+    }
+    class Dialect {
+        constructor(source, flags, disabled) {
+            this.source = source;
+            this.flags = flags;
+            this.disabled = disabled;
+        }
+        allows(term) { return !this.disabled || this.disabled[term] == 0; }
+    }
+    /// A parser holds the parse tables for a given grammar, as generated
+    /// by `lezer-generator`.
+    class LRParser extends Parser {
+        /// @internal
+        constructor(spec) {
+            super();
+            /// @internal
+            this.wrappers = [];
+            if (spec.version != 13 /* Version */)
+                throw new RangeError(`Parser version (${spec.version}) doesn't match runtime version (${13 /* Version */})`);
+            let nodeNames = spec.nodeNames.split(" ");
+            this.minRepeatTerm = nodeNames.length;
+            for (let i = 0; i < spec.repeatNodeCount; i++)
+                nodeNames.push("");
+            let topTerms = Object.keys(spec.topRules).map(r => spec.topRules[r][1]);
+            let nodeProps = [];
+            for (let i = 0; i < nodeNames.length; i++)
+                nodeProps.push([]);
+            function setProp(nodeID, prop, value) {
+                nodeProps[nodeID].push([prop, prop.deserialize(String(value))]);
+            }
+            if (spec.nodeProps)
+                for (let propSpec of spec.nodeProps) {
+                    let prop = propSpec[0];
+                    for (let i = 1; i < propSpec.length;) {
+                        let next = propSpec[i++];
+                        if (next >= 0) {
+                            setProp(next, prop, propSpec[i++]);
+                        }
+                        else {
+                            let value = propSpec[i + -next];
+                            for (let j = -next; j > 0; j--)
+                                setProp(propSpec[i++], prop, value);
+                            i++;
+                        }
+                    }
+                }
+            this.nodeSet = new NodeSet(nodeNames.map((name, i) => NodeType.define({
+                name: i >= this.minRepeatTerm ? undefined : name,
+                id: i,
+                props: nodeProps[i],
+                top: topTerms.indexOf(i) > -1,
+                error: i == 0,
+                skipped: spec.skippedNodes && spec.skippedNodes.indexOf(i) > -1
+            })));
+            this.strict = false;
+            this.bufferLength = DefaultBufferLength;
+            let tokenArray = decodeArray(spec.tokenData);
+            this.context = spec.context;
+            this.specialized = new Uint16Array(spec.specialized ? spec.specialized.length : 0);
+            this.specializers = [];
+            if (spec.specialized)
+                for (let i = 0; i < spec.specialized.length; i++) {
+                    this.specialized[i] = spec.specialized[i].term;
+                    this.specializers[i] = spec.specialized[i].get;
+                }
+            this.states = decodeArray(spec.states, Uint32Array);
+            this.data = decodeArray(spec.stateData);
+            this.goto = decodeArray(spec.goto);
+            this.maxTerm = spec.maxTerm;
+            this.tokenizers = spec.tokenizers.map(value => typeof value == "number" ? new TokenGroup(tokenArray, value) : value);
+            this.topRules = spec.topRules;
+            this.dialects = spec.dialects || {};
+            this.dynamicPrecedences = spec.dynamicPrecedences || null;
+            this.tokenPrecTable = spec.tokenPrec;
+            this.termNames = spec.termNames || null;
+            this.maxNode = this.nodeSet.types.length - 1;
+            this.dialect = this.parseDialect();
+            this.top = this.topRules[Object.keys(this.topRules)[0]];
+        }
+        createParse(input, fragments, ranges) {
+            let parse = new Parse(this, input, fragments, ranges);
+            for (let w of this.wrappers)
+                parse = w(parse, input, fragments, ranges);
+            return parse;
+        }
+        /// Get a goto table entry @internal
+        getGoto(state, term, loose = false) {
+            let table = this.goto;
+            if (term >= table[0])
+                return -1;
+            for (let pos = table[term + 1];;) {
+                let groupTag = table[pos++], last = groupTag & 1;
+                let target = table[pos++];
+                if (last && loose)
+                    return target;
+                for (let end = pos + (groupTag >> 1); pos < end; pos++)
+                    if (table[pos] == state)
+                        return target;
+                if (last)
+                    return -1;
+            }
+        }
+        /// Check if this state has an action for a given terminal @internal
+        hasAction(state, terminal) {
+            let data = this.data;
+            for (let set = 0; set < 2; set++) {
+                for (let i = this.stateSlot(state, set ? 2 /* Skip */ : 1 /* Actions */), next;; i += 3) {
+                    if ((next = data[i]) == 65535 /* End */) {
+                        if (data[i + 1] == 1 /* Next */)
+                            next = data[i = pair(data, i + 2)];
+                        else if (data[i + 1] == 2 /* Other */)
+                            return pair(data, i + 2);
+                        else
+                            break;
+                    }
+                    if (next == terminal || next == 0 /* Err */)
+                        return pair(data, i + 1);
+                }
+            }
+            return 0;
+        }
+        /// @internal
+        stateSlot(state, slot) {
+            return this.states[(state * 6 /* Size */) + slot];
+        }
+        /// @internal
+        stateFlag(state, flag) {
+            return (this.stateSlot(state, 0 /* Flags */) & flag) > 0;
+        }
+        /// @internal
+        validAction(state, action) {
+            if (action == this.stateSlot(state, 4 /* DefaultReduce */))
+                return true;
+            for (let i = this.stateSlot(state, 1 /* Actions */);; i += 3) {
+                if (this.data[i] == 65535 /* End */) {
+                    if (this.data[i + 1] == 1 /* Next */)
+                        i = pair(this.data, i + 2);
+                    else
+                        return false;
+                }
+                if (action == pair(this.data, i + 1))
+                    return true;
+            }
+        }
+        /// Get the states that can follow this one through shift actions or
+        /// goto jumps. @internal
+        nextStates(state) {
+            let result = [];
+            for (let i = this.stateSlot(state, 1 /* Actions */);; i += 3) {
+                if (this.data[i] == 65535 /* End */) {
+                    if (this.data[i + 1] == 1 /* Next */)
+                        i = pair(this.data, i + 2);
+                    else
+                        break;
+                }
+                if ((this.data[i + 2] & (65536 /* ReduceFlag */ >> 16)) == 0) {
+                    let value = this.data[i + 1];
+                    if (!result.some((v, i) => (i & 1) && v == value))
+                        result.push(this.data[i], value);
+                }
+            }
+            return result;
+        }
+        /// @internal
+        overrides(token, prev) {
+            let iPrev = findOffset(this.data, this.tokenPrecTable, prev);
+            return iPrev < 0 || findOffset(this.data, this.tokenPrecTable, token) < iPrev;
+        }
+        /// Configure the parser. Returns a new parser instance that has the
+        /// given settings modified. Settings not provided in `config` are
+        /// kept from the original parser.
+        configure(config) {
+            // Hideous reflection-based kludge to make it easy to create a
+            // slightly modified copy of a parser.
+            let copy = Object.assign(Object.create(LRParser.prototype), this);
+            if (config.props)
+                copy.nodeSet = this.nodeSet.extend(...config.props);
+            if (config.top) {
+                let info = this.topRules[config.top];
+                if (!info)
+                    throw new RangeError(`Invalid top rule name ${config.top}`);
+                copy.top = info;
+            }
+            if (config.tokenizers)
+                copy.tokenizers = this.tokenizers.map(t => {
+                    let found = config.tokenizers.find(r => r.from == t);
+                    return found ? found.to : t;
+                });
+            if (config.contextTracker)
+                copy.context = config.contextTracker;
+            if (config.dialect)
+                copy.dialect = this.parseDialect(config.dialect);
+            if (config.strict != null)
+                copy.strict = config.strict;
+            if (config.wrap)
+                copy.wrappers = copy.wrappers.concat(config.wrap);
+            if (config.bufferLength != null)
+                copy.bufferLength = config.bufferLength;
+            return copy;
+        }
+        /// Returns the name associated with a given term. This will only
+        /// work for all terms when the parser was generated with the
+        /// `--names` option. By default, only the names of tagged terms are
+        /// stored.
+        getName(term) {
+            return this.termNames ? this.termNames[term] : String(term <= this.maxNode && this.nodeSet.types[term].name || term);
+        }
+        /// The eof term id is always allocated directly after the node
+        /// types. @internal
+        get eofTerm() { return this.maxNode + 1; }
+        /// The type of top node produced by the parser.
+        get topNode() { return this.nodeSet.types[this.top[1]]; }
+        /// @internal
+        dynamicPrecedence(term) {
+            let prec = this.dynamicPrecedences;
+            return prec == null ? 0 : prec[term] || 0;
+        }
+        /// @internal
+        parseDialect(dialect) {
+            let values = Object.keys(this.dialects), flags = values.map(() => false);
+            if (dialect)
+                for (let part of dialect.split(" ")) {
+                    let id = values.indexOf(part);
+                    if (id >= 0)
+                        flags[id] = true;
+                }
+            let disabled = null;
+            for (let i = 0; i < values.length; i++)
+                if (!flags[i]) {
+                    for (let j = this.dialects[values[i]], id; (id = this.data[j++]) != 65535 /* End */;)
+                        (disabled || (disabled = new Uint8Array(this.maxTerm + 1)))[id] = 1;
+                }
+            return new Dialect(dialect, flags, disabled);
+        }
+        /// (used by the output of the parser generator) @internal
+        static deserialize(spec) {
+            return new LRParser(spec);
+        }
+    }
+    function pair(data, off) { return data[off] | (data[off + 1] << 16); }
+    function findOffset(data, start, term) {
+        for (let i = start, next; (next = data[i]) != 65535 /* End */; i++)
+            if (next == term)
+                return i - start;
+        return -1;
+    }
+    function findFinished(stacks) {
+        let best = null;
+        for (let stack of stacks) {
+            let stopped = stack.p.stoppedAt;
+            if ((stack.pos == stack.p.stream.end || stopped != null && stack.pos > stopped) &&
+                stack.p.parser.stateFlag(stack.state, 2 /* Accepting */) &&
+                (!best || best.score < stack.score))
+                best = stack;
+        }
+        return best;
+    }
+
+    // This file was generated by lezer-generator. You probably shouldn't edit it.
+    const parser = LRParser.deserialize({
+      version: 13,
+      states: "$hQYQPOOOhQPO'#C`OmQPO'#CbOOQO'#Cj'#CjOOQO'#Cd'#CdQYQPOOOYQPO,58zOYQPO,58|OOQO-E6b-E6bOrQPO1G.fOzQPO1G.hO!PQPO'#CeOrQPO7+$QO!UQPO'#CfO!ZQPO7+$QOOQO7+$S7+$SOYQPO,59POOQO-E6c-E6cO!cQPO<<GlOYQPO,59QOOQO-E6d-E6dOOQO<<Gl<<GlO!kQPO1G.kOOQOAN=WAN=WO!pQPO1G.lOOQO7+$V7+$VOOQO7+$W7+$W",
+      stateData: "!u~O]OSPOS~ORROVQO`POcQO~OTUO~OdVO~OaZOb]O~O__O~OT`O~OTcO~O_eOb]O~O_gOb]O~O_iO~O_jO~O",
+      goto: "!`_PPPP`P`PhntPPP!O]ROTUV`cQTORWTQ[XRa[Q^XQb[Td^bSSOTQXUQYVQf`Rhc",
+      nodeNames: "⚠ Comment Program Statement IfExpression Condition TimesExpression Number",
+      maxTerm: 20,
+      skippedNodes: [0,1],
+      repeatNodeCount: 3,
+      tokenData: "(R~RbX^!Zpq!Z!P!Q#O!Q![#a#X#Y#i#Y#Z$n#]#^&T#^#_&`#a#b&w#h#i'Z#y#z!Z$f$g!Z#BY#BZ!Z$IS$I_!Z$I|$JO!Z$JT$JU!Z$KV$KW!Z&FU&FV!Z~!`Y]~X^!Zpq!Z#y#z!Z$f$g!Z#BY#BZ!Z$IS$I_!Z$I|$JO!Z$JT$JU!Z$KV$KW!Z&FU&FV!Z~#RP!P!Q#U~#ZQP~OY#UZ~#U~#fPV~!Q![#a~#lQ#`#a#r#b#c$c~#uQ#]#^#{#g#h$W~$OP#Y#Z$R~$WOa~~$ZP#X#Y$^~$cOb~~$fP#W#X$i~$nO_~~$qQ#T#U$w#c#d%`~$zP#`#a$}~%QP#g#h%T~%WP#X#Y%Z~%`OT~~%cP#f#g%f~%iP#X#Y%l~%oP#j#k%r~%uP#X#Y%x~%{P#f#g&O~&TOc~~&WP#Y#Z&Z~&`O`~~&cP#i#j&f~&iP#a#b&l~&oP#d#e&r~&wOR~~&zP#c#d&}~'QP#j#k'T~'WP#X#Y&r~'^Q#]#^'d#f#g'{~'gP#a#b'j~'mP#X#Y'p~'sP#g#h'v~'{Od~~(OP#i#j%T",
+      tokenizers: [0],
+      topRules: {"Program":[0,2]},
+      tokenPrec: 0
+    });
+
     // Compressed representation of the Grapheme_Cluster_Break=Extend
     // information from
     // http://www.unicode.org/Public/13.0.0/ucd/auxiliary/GraphemeBreakProperty.txt.
@@ -3100,7 +5864,7 @@
         /**
         Create a [range](https://codemirror.net/6/docs/ref/#rangeset.Range) with this value.
         */
-        range(from, to = from) { return new Range$1(from, to, this); }
+        range(from, to = from) { return new Range(from, to, this); }
     }
     RangeValue.prototype.startSide = RangeValue.prototype.endSide = 0;
     RangeValue.prototype.point = false;
@@ -3108,7 +5872,7 @@
     /**
     A range associates a value with a range of positions.
     */
-    class Range$1 {
+    class Range {
         /**
         @internal
         */
@@ -3288,7 +6052,7 @@
                 else {
                     if (!filter || filterFrom > cur.to || filterTo < cur.from || filter(cur.from, cur.to, cur.value)) {
                         if (!builder.addInner(cur.from, cur.to, cur.value))
-                            spill.push(new Range$1(cur.from, cur.to, cur.value));
+                            spill.push(new Range(cur.from, cur.to, cur.value));
                     }
                     cur.next();
                 }
@@ -3452,7 +6216,7 @@
         */
         static of(ranges, sort = false) {
             let build = new RangeSetBuilder();
-            for (let range of ranges instanceof Range$1 ? [ranges] : sort ? lazySort(ranges) : ranges)
+            for (let range of ranges instanceof Range ? [ranges] : sort ? lazySort(ranges) : ranges)
                 build.add(range.from, range.to, range.value);
             return build.finish();
         }
@@ -11255,1198 +14019,6 @@
         { key: "Alt-u", mac: "Mod-Shift-u", run: redoSelection, preventDefault: true }
     ];
 
-    // FIXME profile adding a per-Tree TreeNode cache, validating it by
-    // parent pointer
-    /// The default maximum length of a `TreeBuffer` node (1024).
-    const DefaultBufferLength = 1024;
-    let nextPropID = 0;
-    class Range {
-        constructor(from, to) {
-            this.from = from;
-            this.to = to;
-        }
-    }
-    /// Each [node type](#common.NodeType) or [individual tree](#common.Tree)
-    /// can have metadata associated with it in props. Instances of this
-    /// class represent prop names.
-    class NodeProp {
-        /// Create a new node prop type.
-        constructor(config = {}) {
-            this.id = nextPropID++;
-            this.perNode = !!config.perNode;
-            this.deserialize = config.deserialize || (() => {
-                throw new Error("This node type doesn't define a deserialize function");
-            });
-        }
-        /// This is meant to be used with
-        /// [`NodeSet.extend`](#common.NodeSet.extend) or
-        /// [`LRParser.configure`](#lr.ParserConfig.props) to compute
-        /// prop values for each node type in the set. Takes a [match
-        /// object](#common.NodeType^match) or function that returns undefined
-        /// if the node type doesn't get this prop, and the prop's value if
-        /// it does.
-        add(match) {
-            if (this.perNode)
-                throw new RangeError("Can't add per-node props to node types");
-            if (typeof match != "function")
-                match = NodeType.match(match);
-            return (type) => {
-                let result = match(type);
-                return result === undefined ? null : [this, result];
-            };
-        }
-    }
-    /// Prop that is used to describe matching delimiters. For opening
-    /// delimiters, this holds an array of node names (written as a
-    /// space-separated string when declaring this prop in a grammar)
-    /// for the node types of closing delimiters that match it.
-    NodeProp.closedBy = new NodeProp({ deserialize: str => str.split(" ") });
-    /// The inverse of [`closedBy`](#common.NodeProp^closedBy). This is
-    /// attached to closing delimiters, holding an array of node names
-    /// of types of matching opening delimiters.
-    NodeProp.openedBy = new NodeProp({ deserialize: str => str.split(" ") });
-    /// Used to assign node types to groups (for example, all node
-    /// types that represent an expression could be tagged with an
-    /// `"Expression"` group).
-    NodeProp.group = new NodeProp({ deserialize: str => str.split(" ") });
-    /// The hash of the [context](#lr.ContextTracker.constructor)
-    /// that the node was parsed in, if any. Used to limit reuse of
-    /// contextual nodes.
-    NodeProp.contextHash = new NodeProp({ perNode: true });
-    /// The distance beyond the end of the node that the tokenizer
-    /// looked ahead for any of the tokens inside the node. (The LR
-    /// parser only stores this when it is larger than 25, for
-    /// efficiency reasons.)
-    NodeProp.lookAhead = new NodeProp({ perNode: true });
-    /// This per-node prop is used to replace a given node, or part of a
-    /// node, with another tree. This is useful to include trees from
-    /// different languages.
-    NodeProp.mounted = new NodeProp({ perNode: true });
-    const noProps = Object.create(null);
-    /// Each node in a syntax tree has a node type associated with it.
-    class NodeType {
-        /// @internal
-        constructor(
-        /// The name of the node type. Not necessarily unique, but if the
-        /// grammar was written properly, different node types with the
-        /// same name within a node set should play the same semantic
-        /// role.
-        name, 
-        /// @internal
-        props, 
-        /// The id of this node in its set. Corresponds to the term ids
-        /// used in the parser.
-        id, 
-        /// @internal
-        flags = 0) {
-            this.name = name;
-            this.props = props;
-            this.id = id;
-            this.flags = flags;
-        }
-        static define(spec) {
-            let props = spec.props && spec.props.length ? Object.create(null) : noProps;
-            let flags = (spec.top ? 1 /* Top */ : 0) | (spec.skipped ? 2 /* Skipped */ : 0) |
-                (spec.error ? 4 /* Error */ : 0) | (spec.name == null ? 8 /* Anonymous */ : 0);
-            let type = new NodeType(spec.name || "", props, spec.id, flags);
-            if (spec.props)
-                for (let src of spec.props) {
-                    if (!Array.isArray(src))
-                        src = src(type);
-                    if (src) {
-                        if (src[0].perNode)
-                            throw new RangeError("Can't store a per-node prop on a node type");
-                        props[src[0].id] = src[1];
-                    }
-                }
-            return type;
-        }
-        /// Retrieves a node prop for this type. Will return `undefined` if
-        /// the prop isn't present on this node.
-        prop(prop) { return this.props[prop.id]; }
-        /// True when this is the top node of a grammar.
-        get isTop() { return (this.flags & 1 /* Top */) > 0; }
-        /// True when this node is produced by a skip rule.
-        get isSkipped() { return (this.flags & 2 /* Skipped */) > 0; }
-        /// Indicates whether this is an error node.
-        get isError() { return (this.flags & 4 /* Error */) > 0; }
-        /// When true, this node type doesn't correspond to a user-declared
-        /// named node, for example because it is used to cache repetition.
-        get isAnonymous() { return (this.flags & 8 /* Anonymous */) > 0; }
-        /// Returns true when this node's name or one of its
-        /// [groups](#common.NodeProp^group) matches the given string.
-        is(name) {
-            if (typeof name == 'string') {
-                if (this.name == name)
-                    return true;
-                let group = this.prop(NodeProp.group);
-                return group ? group.indexOf(name) > -1 : false;
-            }
-            return this.id == name;
-        }
-        /// Create a function from node types to arbitrary values by
-        /// specifying an object whose property names are node or
-        /// [group](#common.NodeProp^group) names. Often useful with
-        /// [`NodeProp.add`](#common.NodeProp.add). You can put multiple
-        /// names, separated by spaces, in a single property name to map
-        /// multiple node names to a single value.
-        static match(map) {
-            let direct = Object.create(null);
-            for (let prop in map)
-                for (let name of prop.split(" "))
-                    direct[name] = map[prop];
-            return (node) => {
-                for (let groups = node.prop(NodeProp.group), i = -1; i < (groups ? groups.length : 0); i++) {
-                    let found = direct[i < 0 ? node.name : groups[i]];
-                    if (found)
-                        return found;
-                }
-            };
-        }
-    }
-    /// An empty dummy node type to use when no actual type is available.
-    NodeType.none = new NodeType("", Object.create(null), 0, 8 /* Anonymous */);
-    const CachedNode = new WeakMap();
-    /// A piece of syntax tree. There are two ways to approach these
-    /// trees: the way they are actually stored in memory, and the
-    /// convenient way.
-    ///
-    /// Syntax trees are stored as a tree of `Tree` and `TreeBuffer`
-    /// objects. By packing detail information into `TreeBuffer` leaf
-    /// nodes, the representation is made a lot more memory-efficient.
-    ///
-    /// However, when you want to actually work with tree nodes, this
-    /// representation is very awkward, so most client code will want to
-    /// use the [`TreeCursor`](#common.TreeCursor) or
-    /// [`SyntaxNode`](#common.SyntaxNode) interface instead, which provides
-    /// a view on some part of this data structure, and can be used to
-    /// move around to adjacent nodes.
-    class Tree {
-        /// Construct a new tree. See also [`Tree.build`](#common.Tree^build).
-        constructor(
-        /// The type of the top node.
-        type, 
-        /// This node's child nodes.
-        children, 
-        /// The positions (offsets relative to the start of this tree) of
-        /// the children.
-        positions, 
-        /// The total length of this tree
-        length, 
-        /// Per-node [node props](#common.NodeProp) to associate with this node.
-        props) {
-            this.type = type;
-            this.children = children;
-            this.positions = positions;
-            this.length = length;
-            /// @internal
-            this.props = null;
-            if (props && props.length) {
-                this.props = Object.create(null);
-                for (let [prop, value] of props)
-                    this.props[typeof prop == "number" ? prop : prop.id] = value;
-            }
-        }
-        /// @internal
-        toString() {
-            let mounted = this.prop(NodeProp.mounted);
-            if (mounted && !mounted.overlay)
-                return mounted.tree.toString();
-            let children = "";
-            for (let ch of this.children) {
-                let str = ch.toString();
-                if (str) {
-                    if (children)
-                        children += ",";
-                    children += str;
-                }
-            }
-            return !this.type.name ? children :
-                (/\W/.test(this.type.name) && !this.type.isError ? JSON.stringify(this.type.name) : this.type.name) +
-                    (children.length ? "(" + children + ")" : "");
-        }
-        /// Get a [tree cursor](#common.TreeCursor) rooted at this tree. When
-        /// `pos` is given, the cursor is [moved](#common.TreeCursor.moveTo)
-        /// to the given position and side.
-        cursor(pos, side = 0) {
-            let scope = (pos != null && CachedNode.get(this)) || this.topNode;
-            let cursor = new TreeCursor(scope);
-            if (pos != null) {
-                cursor.moveTo(pos, side);
-                CachedNode.set(this, cursor._tree);
-            }
-            return cursor;
-        }
-        /// Get a [tree cursor](#common.TreeCursor) that, unlike regular
-        /// cursors, doesn't skip through
-        /// [anonymous](#common.NodeType.isAnonymous) nodes.
-        fullCursor() {
-            return new TreeCursor(this.topNode, 1 /* Full */);
-        }
-        /// Get a [syntax node](#common.SyntaxNode) object for the top of the
-        /// tree.
-        get topNode() {
-            return new TreeNode(this, 0, 0, null);
-        }
-        /// Get the [syntax node](#common.SyntaxNode) at the given position.
-        /// If `side` is -1, this will move into nodes that end at the
-        /// position. If 1, it'll move into nodes that start at the
-        /// position. With 0, it'll only enter nodes that cover the position
-        /// from both sides.
-        resolve(pos, side = 0) {
-            return this.cursor(pos, side).node;
-        }
-        /// Like [`resolve`](#common.Tree.resolve), but will enter
-        /// [overlaid](#common.MountedTree.overlay) nodes, producing a syntax node
-        /// pointing into the innermost overlaid tree at the given position
-        /// (with parent links going through all parent structure, including
-        /// the host trees).
-        resolveInner(pos, side = 0) {
-            let result = this.topNode;
-            for (;;) {
-                let inner = result.enter(pos, side);
-                if (!inner)
-                    return result;
-                result = inner;
-            }
-        }
-        /// Iterate over the tree and its children, calling `enter` for any
-        /// node that touches the `from`/`to` region (if given) before
-        /// running over such a node's children, and `leave` (if given) when
-        /// leaving the node. When `enter` returns `false`, that node will
-        /// not have its children iterated over (or `leave` called).
-        iterate(spec) {
-            let { enter, leave, from = 0, to = this.length } = spec;
-            for (let c = this.cursor(), get = () => c.node;;) {
-                let mustLeave = false;
-                if (c.from <= to && c.to >= from && (c.type.isAnonymous || enter(c.type, c.from, c.to, get) !== false)) {
-                    if (c.firstChild())
-                        continue;
-                    if (!c.type.isAnonymous)
-                        mustLeave = true;
-                }
-                for (;;) {
-                    if (mustLeave && leave)
-                        leave(c.type, c.from, c.to, get);
-                    mustLeave = c.type.isAnonymous;
-                    if (c.nextSibling())
-                        break;
-                    if (!c.parent())
-                        return;
-                    mustLeave = true;
-                }
-            }
-        }
-        /// Get the value of the given [node prop](#common.NodeProp) for this
-        /// node. Works with both per-node and per-type props.
-        prop(prop) {
-            return !prop.perNode ? this.type.prop(prop) : this.props ? this.props[prop.id] : undefined;
-        }
-        /// Returns the node's [per-node props](#common.NodeProp.perNode) in a
-        /// format that can be passed to the [`Tree`](#common.Tree)
-        /// constructor.
-        get propValues() {
-            let result = [];
-            if (this.props)
-                for (let id in this.props)
-                    result.push([+id, this.props[id]]);
-            return result;
-        }
-        /// Balance the direct children of this tree, producing a copy of
-        /// which may have children grouped into subtrees with type
-        /// [`NodeType.none`](#common.NodeType^none).
-        balance(config = {}) {
-            return this.children.length <= 8 /* BranchFactor */ ? this :
-                balanceRange(this.type, this.children, this.positions, 0, this.children.length, 0, this.length, (children, positions, length) => new Tree(this.type, children, positions, length, this.propValues), config.makeTree || ((children, positions, length) => new Tree(NodeType.none, children, positions, length)));
-        }
-        /// Build a tree from a postfix-ordered buffer of node information,
-        /// or a cursor over such a buffer.
-        static build(data) { return buildTree(data); }
-    }
-    /// The empty tree
-    Tree.empty = new Tree(NodeType.none, [], [], 0);
-    class FlatBufferCursor {
-        constructor(buffer, index) {
-            this.buffer = buffer;
-            this.index = index;
-        }
-        get id() { return this.buffer[this.index - 4]; }
-        get start() { return this.buffer[this.index - 3]; }
-        get end() { return this.buffer[this.index - 2]; }
-        get size() { return this.buffer[this.index - 1]; }
-        get pos() { return this.index; }
-        next() { this.index -= 4; }
-        fork() { return new FlatBufferCursor(this.buffer, this.index); }
-    }
-    /// Tree buffers contain (type, start, end, endIndex) quads for each
-    /// node. In such a buffer, nodes are stored in prefix order (parents
-    /// before children, with the endIndex of the parent indicating which
-    /// children belong to it)
-    class TreeBuffer {
-        /// Create a tree buffer.
-        constructor(
-        /// The buffer's content.
-        buffer, 
-        /// The total length of the group of nodes in the buffer.
-        length, 
-        /// The node set used in this buffer.
-        set) {
-            this.buffer = buffer;
-            this.length = length;
-            this.set = set;
-        }
-        /// @internal
-        get type() { return NodeType.none; }
-        /// @internal
-        toString() {
-            let result = [];
-            for (let index = 0; index < this.buffer.length;) {
-                result.push(this.childString(index));
-                index = this.buffer[index + 3];
-            }
-            return result.join(",");
-        }
-        /// @internal
-        childString(index) {
-            let id = this.buffer[index], endIndex = this.buffer[index + 3];
-            let type = this.set.types[id], result = type.name;
-            if (/\W/.test(result) && !type.isError)
-                result = JSON.stringify(result);
-            index += 4;
-            if (endIndex == index)
-                return result;
-            let children = [];
-            while (index < endIndex) {
-                children.push(this.childString(index));
-                index = this.buffer[index + 3];
-            }
-            return result + "(" + children.join(",") + ")";
-        }
-        /// @internal
-        findChild(startIndex, endIndex, dir, pos, side) {
-            let { buffer } = this, pick = -1;
-            for (let i = startIndex; i != endIndex; i = buffer[i + 3]) {
-                if (checkSide(side, pos, buffer[i + 1], buffer[i + 2])) {
-                    pick = i;
-                    if (dir > 0)
-                        break;
-                }
-            }
-            return pick;
-        }
-        /// @internal
-        slice(startI, endI, from, to) {
-            let b = this.buffer;
-            let copy = new Uint16Array(endI - startI);
-            for (let i = startI, j = 0; i < endI;) {
-                copy[j++] = b[i++];
-                copy[j++] = b[i++] - from;
-                copy[j++] = b[i++] - from;
-                copy[j++] = b[i++] - startI;
-            }
-            return new TreeBuffer(copy, to - from, this.set);
-        }
-    }
-    function checkSide(side, pos, from, to) {
-        switch (side) {
-            case -2 /* Before */: return from < pos;
-            case -1 /* AtOrBefore */: return to >= pos && from < pos;
-            case 0 /* Around */: return from < pos && to > pos;
-            case 1 /* AtOrAfter */: return from <= pos && to > pos;
-            case 2 /* After */: return to > pos;
-            case 4 /* DontCare */: return true;
-        }
-    }
-    function enterUnfinishedNodesBefore(node, pos) {
-        let scan = node.childBefore(pos);
-        while (scan) {
-            let last = scan.lastChild;
-            if (!last || last.to != scan.to)
-                break;
-            if (last.type.isError && last.from == last.to) {
-                node = scan;
-                scan = last.prevSibling;
-            }
-            else {
-                scan = last;
-            }
-        }
-        return node;
-    }
-    class TreeNode {
-        constructor(node, _from, 
-        // Index in parent node, set to -1 if the node is not a direct child of _parent.node (overlay)
-        index, _parent) {
-            this.node = node;
-            this._from = _from;
-            this.index = index;
-            this._parent = _parent;
-        }
-        get type() { return this.node.type; }
-        get name() { return this.node.type.name; }
-        get from() { return this._from; }
-        get to() { return this._from + this.node.length; }
-        nextChild(i, dir, pos, side, mode = 0) {
-            for (let parent = this;;) {
-                for (let { children, positions } = parent.node, e = dir > 0 ? children.length : -1; i != e; i += dir) {
-                    let next = children[i], start = positions[i] + parent._from;
-                    if (!checkSide(side, pos, start, start + next.length))
-                        continue;
-                    if (next instanceof TreeBuffer) {
-                        if (mode & 2 /* NoEnterBuffer */)
-                            continue;
-                        let index = next.findChild(0, next.buffer.length, dir, pos - start, side);
-                        if (index > -1)
-                            return new BufferNode(new BufferContext(parent, next, i, start), null, index);
-                    }
-                    else if ((mode & 1 /* Full */) || (!next.type.isAnonymous || hasChild(next))) {
-                        let mounted;
-                        if (next.props && (mounted = next.prop(NodeProp.mounted)) && !mounted.overlay)
-                            return new TreeNode(mounted.tree, start, i, parent);
-                        let inner = new TreeNode(next, start, i, parent);
-                        return (mode & 1 /* Full */) || !inner.type.isAnonymous ? inner
-                            : inner.nextChild(dir < 0 ? next.children.length - 1 : 0, dir, pos, side);
-                    }
-                }
-                if ((mode & 1 /* Full */) || !parent.type.isAnonymous)
-                    return null;
-                if (parent.index >= 0)
-                    i = parent.index + dir;
-                else
-                    i = dir < 0 ? -1 : parent._parent.node.children.length;
-                parent = parent._parent;
-                if (!parent)
-                    return null;
-            }
-        }
-        get firstChild() { return this.nextChild(0, 1, 0, 4 /* DontCare */); }
-        get lastChild() { return this.nextChild(this.node.children.length - 1, -1, 0, 4 /* DontCare */); }
-        childAfter(pos) { return this.nextChild(0, 1, pos, 2 /* After */); }
-        childBefore(pos) { return this.nextChild(this.node.children.length - 1, -1, pos, -2 /* Before */); }
-        enter(pos, side, overlays = true, buffers = true) {
-            let mounted;
-            if (overlays && (mounted = this.node.prop(NodeProp.mounted)) && mounted.overlay) {
-                let rPos = pos - this.from;
-                for (let { from, to } of mounted.overlay) {
-                    if ((side > 0 ? from <= rPos : from < rPos) &&
-                        (side < 0 ? to >= rPos : to > rPos))
-                        return new TreeNode(mounted.tree, mounted.overlay[0].from + this.from, -1, this);
-                }
-            }
-            return this.nextChild(0, 1, pos, side, buffers ? 0 : 2 /* NoEnterBuffer */);
-        }
-        nextSignificantParent() {
-            let val = this;
-            while (val.type.isAnonymous && val._parent)
-                val = val._parent;
-            return val;
-        }
-        get parent() {
-            return this._parent ? this._parent.nextSignificantParent() : null;
-        }
-        get nextSibling() {
-            return this._parent && this.index >= 0 ? this._parent.nextChild(this.index + 1, 1, 0, 4 /* DontCare */) : null;
-        }
-        get prevSibling() {
-            return this._parent && this.index >= 0 ? this._parent.nextChild(this.index - 1, -1, 0, 4 /* DontCare */) : null;
-        }
-        get cursor() { return new TreeCursor(this); }
-        get tree() { return this.node; }
-        toTree() { return this.node; }
-        resolve(pos, side = 0) {
-            return this.cursor.moveTo(pos, side).node;
-        }
-        enterUnfinishedNodesBefore(pos) { return enterUnfinishedNodesBefore(this, pos); }
-        getChild(type, before = null, after = null) {
-            let r = getChildren(this, type, before, after);
-            return r.length ? r[0] : null;
-        }
-        getChildren(type, before = null, after = null) {
-            return getChildren(this, type, before, after);
-        }
-        /// @internal
-        toString() { return this.node.toString(); }
-    }
-    function getChildren(node, type, before, after) {
-        let cur = node.cursor, result = [];
-        if (!cur.firstChild())
-            return result;
-        if (before != null)
-            while (!cur.type.is(before))
-                if (!cur.nextSibling())
-                    return result;
-        for (;;) {
-            if (after != null && cur.type.is(after))
-                return result;
-            if (cur.type.is(type))
-                result.push(cur.node);
-            if (!cur.nextSibling())
-                return after == null ? result : [];
-        }
-    }
-    class BufferContext {
-        constructor(parent, buffer, index, start) {
-            this.parent = parent;
-            this.buffer = buffer;
-            this.index = index;
-            this.start = start;
-        }
-    }
-    class BufferNode {
-        constructor(context, _parent, index) {
-            this.context = context;
-            this._parent = _parent;
-            this.index = index;
-            this.type = context.buffer.set.types[context.buffer.buffer[index]];
-        }
-        get name() { return this.type.name; }
-        get from() { return this.context.start + this.context.buffer.buffer[this.index + 1]; }
-        get to() { return this.context.start + this.context.buffer.buffer[this.index + 2]; }
-        child(dir, pos, side) {
-            let { buffer } = this.context;
-            let index = buffer.findChild(this.index + 4, buffer.buffer[this.index + 3], dir, pos - this.context.start, side);
-            return index < 0 ? null : new BufferNode(this.context, this, index);
-        }
-        get firstChild() { return this.child(1, 0, 4 /* DontCare */); }
-        get lastChild() { return this.child(-1, 0, 4 /* DontCare */); }
-        childAfter(pos) { return this.child(1, pos, 2 /* After */); }
-        childBefore(pos) { return this.child(-1, pos, -2 /* Before */); }
-        enter(pos, side, overlays, buffers = true) {
-            if (!buffers)
-                return null;
-            let { buffer } = this.context;
-            let index = buffer.findChild(this.index + 4, buffer.buffer[this.index + 3], side > 0 ? 1 : -1, pos - this.context.start, side);
-            return index < 0 ? null : new BufferNode(this.context, this, index);
-        }
-        get parent() {
-            return this._parent || this.context.parent.nextSignificantParent();
-        }
-        externalSibling(dir) {
-            return this._parent ? null : this.context.parent.nextChild(this.context.index + dir, dir, 0, 4 /* DontCare */);
-        }
-        get nextSibling() {
-            let { buffer } = this.context;
-            let after = buffer.buffer[this.index + 3];
-            if (after < (this._parent ? buffer.buffer[this._parent.index + 3] : buffer.buffer.length))
-                return new BufferNode(this.context, this._parent, after);
-            return this.externalSibling(1);
-        }
-        get prevSibling() {
-            let { buffer } = this.context;
-            let parentStart = this._parent ? this._parent.index + 4 : 0;
-            if (this.index == parentStart)
-                return this.externalSibling(-1);
-            return new BufferNode(this.context, this._parent, buffer.findChild(parentStart, this.index, -1, 0, 4 /* DontCare */));
-        }
-        get cursor() { return new TreeCursor(this); }
-        get tree() { return null; }
-        toTree() {
-            let children = [], positions = [];
-            let { buffer } = this.context;
-            let startI = this.index + 4, endI = buffer.buffer[this.index + 3];
-            if (endI > startI) {
-                let from = buffer.buffer[this.index + 1], to = buffer.buffer[this.index + 2];
-                children.push(buffer.slice(startI, endI, from, to));
-                positions.push(0);
-            }
-            return new Tree(this.type, children, positions, this.to - this.from);
-        }
-        resolve(pos, side = 0) {
-            return this.cursor.moveTo(pos, side).node;
-        }
-        enterUnfinishedNodesBefore(pos) { return enterUnfinishedNodesBefore(this, pos); }
-        /// @internal
-        toString() { return this.context.buffer.childString(this.index); }
-        getChild(type, before = null, after = null) {
-            let r = getChildren(this, type, before, after);
-            return r.length ? r[0] : null;
-        }
-        getChildren(type, before = null, after = null) {
-            return getChildren(this, type, before, after);
-        }
-    }
-    /// A tree cursor object focuses on a given node in a syntax tree, and
-    /// allows you to move to adjacent nodes.
-    class TreeCursor {
-        /// @internal
-        constructor(node, 
-        /// @internal
-        mode = 0) {
-            this.mode = mode;
-            this.buffer = null;
-            this.stack = [];
-            this.index = 0;
-            this.bufferNode = null;
-            if (node instanceof TreeNode) {
-                this.yieldNode(node);
-            }
-            else {
-                this._tree = node.context.parent;
-                this.buffer = node.context;
-                for (let n = node._parent; n; n = n._parent)
-                    this.stack.unshift(n.index);
-                this.bufferNode = node;
-                this.yieldBuf(node.index);
-            }
-        }
-        /// Shorthand for `.type.name`.
-        get name() { return this.type.name; }
-        yieldNode(node) {
-            if (!node)
-                return false;
-            this._tree = node;
-            this.type = node.type;
-            this.from = node.from;
-            this.to = node.to;
-            return true;
-        }
-        yieldBuf(index, type) {
-            this.index = index;
-            let { start, buffer } = this.buffer;
-            this.type = type || buffer.set.types[buffer.buffer[index]];
-            this.from = start + buffer.buffer[index + 1];
-            this.to = start + buffer.buffer[index + 2];
-            return true;
-        }
-        yield(node) {
-            if (!node)
-                return false;
-            if (node instanceof TreeNode) {
-                this.buffer = null;
-                return this.yieldNode(node);
-            }
-            this.buffer = node.context;
-            return this.yieldBuf(node.index, node.type);
-        }
-        /// @internal
-        toString() {
-            return this.buffer ? this.buffer.buffer.childString(this.index) : this._tree.toString();
-        }
-        /// @internal
-        enterChild(dir, pos, side) {
-            if (!this.buffer)
-                return this.yield(this._tree.nextChild(dir < 0 ? this._tree.node.children.length - 1 : 0, dir, pos, side, this.mode));
-            let { buffer } = this.buffer;
-            let index = buffer.findChild(this.index + 4, buffer.buffer[this.index + 3], dir, pos - this.buffer.start, side);
-            if (index < 0)
-                return false;
-            this.stack.push(this.index);
-            return this.yieldBuf(index);
-        }
-        /// Move the cursor to this node's first child. When this returns
-        /// false, the node has no child, and the cursor has not been moved.
-        firstChild() { return this.enterChild(1, 0, 4 /* DontCare */); }
-        /// Move the cursor to this node's last child.
-        lastChild() { return this.enterChild(-1, 0, 4 /* DontCare */); }
-        /// Move the cursor to the first child that ends after `pos`.
-        childAfter(pos) { return this.enterChild(1, pos, 2 /* After */); }
-        /// Move to the last child that starts before `pos`.
-        childBefore(pos) { return this.enterChild(-1, pos, -2 /* Before */); }
-        /// Move the cursor to the child around `pos`. If side is -1 the
-        /// child may end at that position, when 1 it may start there. This
-        /// will also enter [overlaid](#common.MountedTree.overlay)
-        /// [mounted](#common.NodeProp^mounted) trees unless `overlays` is
-        /// set to false.
-        enter(pos, side, overlays = true, buffers = true) {
-            if (!this.buffer)
-                return this.yield(this._tree.enter(pos, side, overlays, buffers));
-            return buffers ? this.enterChild(1, pos, side) : false;
-        }
-        /// Move the node's parent node, if this isn't the top node.
-        parent() {
-            if (!this.buffer)
-                return this.yieldNode((this.mode & 1 /* Full */) ? this._tree._parent : this._tree.parent);
-            if (this.stack.length)
-                return this.yieldBuf(this.stack.pop());
-            let parent = (this.mode & 1 /* Full */) ? this.buffer.parent : this.buffer.parent.nextSignificantParent();
-            this.buffer = null;
-            return this.yieldNode(parent);
-        }
-        /// @internal
-        sibling(dir) {
-            if (!this.buffer)
-                return !this._tree._parent ? false
-                    : this.yield(this._tree.index < 0 ? null
-                        : this._tree._parent.nextChild(this._tree.index + dir, dir, 0, 4 /* DontCare */, this.mode));
-            let { buffer } = this.buffer, d = this.stack.length - 1;
-            if (dir < 0) {
-                let parentStart = d < 0 ? 0 : this.stack[d] + 4;
-                if (this.index != parentStart)
-                    return this.yieldBuf(buffer.findChild(parentStart, this.index, -1, 0, 4 /* DontCare */));
-            }
-            else {
-                let after = buffer.buffer[this.index + 3];
-                if (after < (d < 0 ? buffer.buffer.length : buffer.buffer[this.stack[d] + 3]))
-                    return this.yieldBuf(after);
-            }
-            return d < 0 ? this.yield(this.buffer.parent.nextChild(this.buffer.index + dir, dir, 0, 4 /* DontCare */, this.mode)) : false;
-        }
-        /// Move to this node's next sibling, if any.
-        nextSibling() { return this.sibling(1); }
-        /// Move to this node's previous sibling, if any.
-        prevSibling() { return this.sibling(-1); }
-        atLastNode(dir) {
-            let index, parent, { buffer } = this;
-            if (buffer) {
-                if (dir > 0) {
-                    if (this.index < buffer.buffer.buffer.length)
-                        return false;
-                }
-                else {
-                    for (let i = 0; i < this.index; i++)
-                        if (buffer.buffer.buffer[i + 3] < this.index)
-                            return false;
-                }
-                ({ index, parent } = buffer);
-            }
-            else {
-                ({ index, _parent: parent } = this._tree);
-            }
-            for (; parent; { index, _parent: parent } = parent) {
-                if (index > -1)
-                    for (let i = index + dir, e = dir < 0 ? -1 : parent.node.children.length; i != e; i += dir) {
-                        let child = parent.node.children[i];
-                        if ((this.mode & 1 /* Full */) || child instanceof TreeBuffer || !child.type.isAnonymous || hasChild(child))
-                            return false;
-                    }
-            }
-            return true;
-        }
-        move(dir, enter) {
-            if (enter && this.enterChild(dir, 0, 4 /* DontCare */))
-                return true;
-            for (;;) {
-                if (this.sibling(dir))
-                    return true;
-                if (this.atLastNode(dir) || !this.parent())
-                    return false;
-            }
-        }
-        /// Move to the next node in a
-        /// [pre-order](https://en.wikipedia.org/wiki/Tree_traversal#Pre-order_(NLR))
-        /// traversal, going from a node to its first child or, if the
-        /// current node is empty or `enter` is false, its next sibling or
-        /// the next sibling of the first parent node that has one.
-        next(enter = true) { return this.move(1, enter); }
-        /// Move to the next node in a last-to-first pre-order traveral. A
-        /// node is followed by its last child or, if it has none, its
-        /// previous sibling or the previous sibling of the first parent
-        /// node that has one.
-        prev(enter = true) { return this.move(-1, enter); }
-        /// Move the cursor to the innermost node that covers `pos`. If
-        /// `side` is -1, it will enter nodes that end at `pos`. If it is 1,
-        /// it will enter nodes that start at `pos`.
-        moveTo(pos, side = 0) {
-            // Move up to a node that actually holds the position, if possible
-            while (this.from == this.to ||
-                (side < 1 ? this.from >= pos : this.from > pos) ||
-                (side > -1 ? this.to <= pos : this.to < pos))
-                if (!this.parent())
-                    break;
-            // Then scan down into child nodes as far as possible
-            while (this.enterChild(1, pos, side)) { }
-            return this;
-        }
-        /// Get a [syntax node](#common.SyntaxNode) at the cursor's current
-        /// position.
-        get node() {
-            if (!this.buffer)
-                return this._tree;
-            let cache = this.bufferNode, result = null, depth = 0;
-            if (cache && cache.context == this.buffer) {
-                scan: for (let index = this.index, d = this.stack.length; d >= 0;) {
-                    for (let c = cache; c; c = c._parent)
-                        if (c.index == index) {
-                            if (index == this.index)
-                                return c;
-                            result = c;
-                            depth = d + 1;
-                            break scan;
-                        }
-                    index = this.stack[--d];
-                }
-            }
-            for (let i = depth; i < this.stack.length; i++)
-                result = new BufferNode(this.buffer, result, this.stack[i]);
-            return this.bufferNode = new BufferNode(this.buffer, result, this.index);
-        }
-        /// Get the [tree](#common.Tree) that represents the current node, if
-        /// any. Will return null when the node is in a [tree
-        /// buffer](#common.TreeBuffer).
-        get tree() {
-            return this.buffer ? null : this._tree.node;
-        }
-    }
-    function hasChild(tree) {
-        return tree.children.some(ch => ch instanceof TreeBuffer || !ch.type.isAnonymous || hasChild(ch));
-    }
-    function buildTree(data) {
-        var _a;
-        let { buffer, nodeSet, maxBufferLength = DefaultBufferLength, reused = [], minRepeatType = nodeSet.types.length } = data;
-        let cursor = Array.isArray(buffer) ? new FlatBufferCursor(buffer, buffer.length) : buffer;
-        let types = nodeSet.types;
-        let contextHash = 0, lookAhead = 0;
-        function takeNode(parentStart, minPos, children, positions, inRepeat) {
-            let { id, start, end, size } = cursor;
-            let lookAheadAtStart = lookAhead;
-            while (size < 0) {
-                cursor.next();
-                if (size == -1 /* Reuse */) {
-                    let node = reused[id];
-                    children.push(node);
-                    positions.push(start - parentStart);
-                    return;
-                }
-                else if (size == -3 /* ContextChange */) { // Context change
-                    contextHash = id;
-                    return;
-                }
-                else if (size == -4 /* LookAhead */) {
-                    lookAhead = id;
-                    return;
-                }
-                else {
-                    throw new RangeError(`Unrecognized record size: ${size}`);
-                }
-            }
-            let type = types[id], node, buffer;
-            let startPos = start - parentStart;
-            if (end - start <= maxBufferLength && (buffer = findBufferSize(cursor.pos - minPos, inRepeat))) {
-                // Small enough for a buffer, and no reused nodes inside
-                let data = new Uint16Array(buffer.size - buffer.skip);
-                let endPos = cursor.pos - buffer.size, index = data.length;
-                while (cursor.pos > endPos)
-                    index = copyToBuffer(buffer.start, data, index);
-                node = new TreeBuffer(data, end - buffer.start, nodeSet);
-                startPos = buffer.start - parentStart;
-            }
-            else { // Make it a node
-                let endPos = cursor.pos - size;
-                cursor.next();
-                let localChildren = [], localPositions = [];
-                let localInRepeat = id >= minRepeatType ? id : -1;
-                let lastGroup = 0, lastEnd = end;
-                while (cursor.pos > endPos) {
-                    if (localInRepeat >= 0 && cursor.id == localInRepeat && cursor.size >= 0) {
-                        if (cursor.end <= lastEnd - maxBufferLength) {
-                            makeRepeatLeaf(localChildren, localPositions, start, lastGroup, cursor.end, lastEnd, localInRepeat, lookAheadAtStart);
-                            lastGroup = localChildren.length;
-                            lastEnd = cursor.end;
-                        }
-                        cursor.next();
-                    }
-                    else {
-                        takeNode(start, endPos, localChildren, localPositions, localInRepeat);
-                    }
-                }
-                if (localInRepeat >= 0 && lastGroup > 0 && lastGroup < localChildren.length)
-                    makeRepeatLeaf(localChildren, localPositions, start, lastGroup, start, lastEnd, localInRepeat, lookAheadAtStart);
-                localChildren.reverse();
-                localPositions.reverse();
-                if (localInRepeat > -1 && lastGroup > 0) {
-                    let make = makeBalanced(type);
-                    node = balanceRange(type, localChildren, localPositions, 0, localChildren.length, 0, end - start, make, make);
-                }
-                else {
-                    node = makeTree(type, localChildren, localPositions, end - start, lookAheadAtStart - end);
-                }
-            }
-            children.push(node);
-            positions.push(startPos);
-        }
-        function makeBalanced(type) {
-            return (children, positions, length) => {
-                let lookAhead = 0, lastI = children.length - 1, last, lookAheadProp;
-                if (lastI >= 0 && (last = children[lastI]) instanceof Tree) {
-                    if (!lastI && last.type == type && last.length == length)
-                        return last;
-                    if (lookAheadProp = last.prop(NodeProp.lookAhead))
-                        lookAhead = positions[lastI] + last.length + lookAheadProp;
-                }
-                return makeTree(type, children, positions, length, lookAhead);
-            };
-        }
-        function makeRepeatLeaf(children, positions, base, i, from, to, type, lookAhead) {
-            let localChildren = [], localPositions = [];
-            while (children.length > i) {
-                localChildren.push(children.pop());
-                localPositions.push(positions.pop() + base - from);
-            }
-            children.push(makeTree(nodeSet.types[type], localChildren, localPositions, to - from, lookAhead - to));
-            positions.push(from - base);
-        }
-        function makeTree(type, children, positions, length, lookAhead = 0, props) {
-            if (contextHash) {
-                let pair = [NodeProp.contextHash, contextHash];
-                props = props ? [pair].concat(props) : [pair];
-            }
-            if (lookAhead > 25) {
-                let pair = [NodeProp.lookAhead, lookAhead];
-                props = props ? [pair].concat(props) : [pair];
-            }
-            return new Tree(type, children, positions, length, props);
-        }
-        function findBufferSize(maxSize, inRepeat) {
-            // Scan through the buffer to find previous siblings that fit
-            // together in a TreeBuffer, and don't contain any reused nodes
-            // (which can't be stored in a buffer).
-            // If `inRepeat` is > -1, ignore node boundaries of that type for
-            // nesting, but make sure the end falls either at the start
-            // (`maxSize`) or before such a node.
-            let fork = cursor.fork();
-            let size = 0, start = 0, skip = 0, minStart = fork.end - maxBufferLength;
-            let result = { size: 0, start: 0, skip: 0 };
-            scan: for (let minPos = fork.pos - maxSize; fork.pos > minPos;) {
-                let nodeSize = fork.size;
-                // Pretend nested repeat nodes of the same type don't exist
-                if (fork.id == inRepeat && nodeSize >= 0) {
-                    // Except that we store the current state as a valid return
-                    // value.
-                    result.size = size;
-                    result.start = start;
-                    result.skip = skip;
-                    skip += 4;
-                    size += 4;
-                    fork.next();
-                    continue;
-                }
-                let startPos = fork.pos - nodeSize;
-                if (nodeSize < 0 || startPos < minPos || fork.start < minStart)
-                    break;
-                let localSkipped = fork.id >= minRepeatType ? 4 : 0;
-                let nodeStart = fork.start;
-                fork.next();
-                while (fork.pos > startPos) {
-                    if (fork.size < 0) {
-                        if (fork.size == -3 /* ContextChange */)
-                            localSkipped += 4;
-                        else
-                            break scan;
-                    }
-                    else if (fork.id >= minRepeatType) {
-                        localSkipped += 4;
-                    }
-                    fork.next();
-                }
-                start = nodeStart;
-                size += nodeSize;
-                skip += localSkipped;
-            }
-            if (inRepeat < 0 || size == maxSize) {
-                result.size = size;
-                result.start = start;
-                result.skip = skip;
-            }
-            return result.size > 4 ? result : undefined;
-        }
-        function copyToBuffer(bufferStart, buffer, index) {
-            let { id, start, end, size } = cursor;
-            cursor.next();
-            if (size >= 0 && id < minRepeatType) {
-                let startIndex = index;
-                if (size > 4) {
-                    let endPos = cursor.pos - (size - 4);
-                    while (cursor.pos > endPos)
-                        index = copyToBuffer(bufferStart, buffer, index);
-                }
-                buffer[--index] = startIndex;
-                buffer[--index] = end - bufferStart;
-                buffer[--index] = start - bufferStart;
-                buffer[--index] = id;
-            }
-            else if (size == -3 /* ContextChange */) {
-                contextHash = id;
-            }
-            else if (size == -4 /* LookAhead */) {
-                lookAhead = id;
-            }
-            return index;
-        }
-        let children = [], positions = [];
-        while (cursor.pos > 0)
-            takeNode(data.start || 0, data.bufferStart || 0, children, positions, -1);
-        let length = (_a = data.length) !== null && _a !== void 0 ? _a : (children.length ? positions[0] + children[0].length : 0);
-        return new Tree(types[data.topID], children.reverse(), positions.reverse(), length);
-    }
-    const nodeSizeCache = new WeakMap;
-    function nodeSize(balanceType, node) {
-        if (!balanceType.isAnonymous || node instanceof TreeBuffer || node.type != balanceType)
-            return 1;
-        let size = nodeSizeCache.get(node);
-        if (size == null) {
-            size = node.children.reduce((s, ch) => s + nodeSize(balanceType, ch), 1);
-            nodeSizeCache.set(node, size);
-        }
-        return size;
-    }
-    function balanceRange(
-    // The type to tag the resulting tree with. Will also be used for
-    // internal nodes when it is an anonymous type
-    type, 
-    // The direct children and their positions
-    children, positions, 
-    // The index range in children/positions to use
-    from, to, 
-    // The start position of the nodes, relative to their parent.
-    start, 
-    // Length of the outer node
-    length, 
-    // Function to build the top node of the balanced tree
-    mkTop, 
-    // Function to build internal nodes for the balanced tree
-    mkTree) {
-        let total = 0;
-        for (let i = from; i < to; i++)
-            total += nodeSize(type, children[i]);
-        let maxChild = Math.ceil((total * 1.5) / 8 /* BranchFactor */);
-        let localChildren = [], localPositions = [];
-        function divide(children, positions, from, to, offset) {
-            for (let i = from; i < to;) {
-                let groupFrom = i, groupStart = positions[i], groupSize = nodeSize(type, children[i]);
-                i++;
-                for (; i < to; i++) {
-                    let nextSize = nodeSize(type, children[i]);
-                    if (groupSize + nextSize >= maxChild)
-                        break;
-                    groupSize += nextSize;
-                }
-                if (i == groupFrom + 1) {
-                    if (groupSize > maxChild) {
-                        let only = children[groupFrom];
-                        divide(only.children, only.positions, 0, only.children.length, positions[groupFrom] + offset);
-                        continue;
-                    }
-                    localChildren.push(children[groupFrom]);
-                }
-                else {
-                    let length = positions[i - 1] + children[i - 1].length - groupStart;
-                    localChildren.push(balanceRange(type, children, positions, groupFrom, i, groupStart, length, null, mkTree));
-                }
-                localPositions.push(groupStart + offset - start);
-            }
-        }
-        divide(children, positions, from, to, 0);
-        return (mkTop || mkTree)(localChildren, localPositions, length);
-    }
-
-    /// Tree fragments are used during [incremental
-    /// parsing](#common.Parser.startParse) to track parts of old trees
-    /// that can be reused in a new parse. An array of fragments is used
-    /// to track regions of an old tree whose nodes might be reused in new
-    /// parses. Use the static
-    /// [`applyChanges`](#common.TreeFragment^applyChanges) method to
-    /// update fragments for document changes.
-    class TreeFragment {
-        /// Construct a tree fragment.
-        constructor(
-        /// The start of the unchanged range pointed to by this fragment.
-        /// This refers to an offset in the _updated_ document (as opposed
-        /// to the original tree).
-        from, 
-        /// The end of the unchanged range.
-        to, 
-        /// The tree that this fragment is based on.
-        tree, 
-        /// The offset between the fragment's tree and the document that
-        /// this fragment can be used against. Add this when going from
-        /// document to tree positions, subtract it to go from tree to
-        /// document positions.
-        offset, openStart = false, openEnd = false) {
-            this.from = from;
-            this.to = to;
-            this.tree = tree;
-            this.offset = offset;
-            this.open = (openStart ? 1 /* Start */ : 0) | (openEnd ? 2 /* End */ : 0);
-        }
-        /// Whether the start of the fragment represents the start of a
-        /// parse, or the end of a change. (In the second case, it may not
-        /// be safe to reuse some nodes at the start, depending on the
-        /// parsing algorithm.)
-        get openStart() { return (this.open & 1 /* Start */) > 0; }
-        /// Whether the end of the fragment represents the end of a
-        /// full-document parse, or the start of a change.
-        get openEnd() { return (this.open & 2 /* End */) > 0; }
-        /// Create a set of fragments from a freshly parsed tree, or update
-        /// an existing set of fragments by replacing the ones that overlap
-        /// with a tree with content from the new tree. When `partial` is
-        /// true, the parse is treated as incomplete, and the resulting
-        /// fragment has [`openEnd`](#common.TreeFragment.openEnd) set to
-        /// true.
-        static addTree(tree, fragments = [], partial = false) {
-            let result = [new TreeFragment(0, tree.length, tree, 0, false, partial)];
-            for (let f of fragments)
-                if (f.to > tree.length)
-                    result.push(f);
-            return result;
-        }
-        /// Apply a set of edits to an array of fragments, removing or
-        /// splitting fragments as necessary to remove edited ranges, and
-        /// adjusting offsets for fragments that moved.
-        static applyChanges(fragments, changes, minGap = 128) {
-            if (!changes.length)
-                return fragments;
-            let result = [];
-            let fI = 1, nextF = fragments.length ? fragments[0] : null;
-            for (let cI = 0, pos = 0, off = 0;; cI++) {
-                let nextC = cI < changes.length ? changes[cI] : null;
-                let nextPos = nextC ? nextC.fromA : 1e9;
-                if (nextPos - pos >= minGap)
-                    while (nextF && nextF.from < nextPos) {
-                        let cut = nextF;
-                        if (pos >= cut.from || nextPos <= cut.to || off) {
-                            let fFrom = Math.max(cut.from, pos) - off, fTo = Math.min(cut.to, nextPos) - off;
-                            cut = fFrom >= fTo ? null : new TreeFragment(fFrom, fTo, cut.tree, cut.offset + off, cI > 0, !!nextC);
-                        }
-                        if (cut)
-                            result.push(cut);
-                        if (nextF.to > nextPos)
-                            break;
-                        nextF = fI < fragments.length ? fragments[fI++] : null;
-                    }
-                if (!nextC)
-                    break;
-                pos = nextC.toA;
-                off = nextC.toA - nextC.toB;
-            }
-            return result;
-        }
-    }
-    /// A superclass that parsers should extend.
-    class Parser {
-        /// Start a parse, returning a [partial parse](#common.PartialParse)
-        /// object. [`fragments`](#common.TreeFragment) can be passed in to
-        /// make the parse incremental.
-        ///
-        /// By default, the entire input is parsed. You can pass `ranges`,
-        /// which should be a sorted array of non-empty, non-overlapping
-        /// ranges, to parse only those ranges. The tree returned in that
-        /// case will start at `ranges[0].from`.
-        startParse(input, fragments, ranges) {
-            if (typeof input == "string")
-                input = new StringInput(input);
-            ranges = !ranges ? [new Range(0, input.length)] : ranges.length ? ranges.map(r => new Range(r.from, r.to)) : [new Range(0, 0)];
-            return this.createParse(input, fragments || [], ranges);
-        }
-        /// Run a full parse, returning the resulting tree.
-        parse(input, fragments, ranges) {
-            let parse = this.startParse(input, fragments, ranges);
-            for (;;) {
-                let done = parse.advance();
-                if (done)
-                    return done;
-            }
-        }
-    }
-    class StringInput {
-        constructor(string) {
-            this.string = string;
-        }
-        get length() { return this.string.length; }
-        chunk(from) { return this.string.slice(from); }
-        get lineChunks() { return false; }
-        read(from, to) { return this.string.slice(from, to); }
-    }
-
     /**
     Node prop stored in a grammar's top syntax node to provide the
     facet that stores language data for that language.
@@ -19519,5 +21091,7 @@
       }),
       parent: document.getElementById("editor")
     });
+
+    console.log(parser);
 
 })();
