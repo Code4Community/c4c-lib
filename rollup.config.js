@@ -1,11 +1,11 @@
-import {nodeResolve} from "@rollup/plugin-node-resolve"
-import {lezer} from "@lezer/generator/rollup"
+import { nodeResolve } from "@rollup/plugin-node-resolve";
+import { lezer } from "@lezer/generator/rollup";
 
 export default {
-  input: "src/editor.js",
+  input: "src/main.js",
   output: {
-    file: "src/editor.bundle.js",
-    format: "iife"
+    file: "dist/main.bundle.js",
+    format: "iife",
   },
-  plugins: [nodeResolve(), lezer()]
-}
+  plugins: [nodeResolve(), lezer()],
+};

@@ -1,12 +1,16 @@
 {
-    "scripts": {
-        "build": "node_modules/.bin/rollup -c"
-    },
-    "dependencies": {
-        "@codemirror/basic-setup": "^0.19.0",
-        "@lezer/generator": "^0.15.2",
-        "@lezer/lr": "^0.15.4",
-        "@rollup/plugin-node-resolve": "^13.0.6",
-        "rollup": "^2.58.3"
-    }
+  "scripts": {
+    "build": "node_modules/.bin/rollup -c",
+    "watch": "node_modules/.bin/rollup -c -w"
+  },
+  "dependencies": {
+    "@codemirror/basic-setup": "^0.19.0",
+    "@lezer/generator": "^0.15.2",
+    "@lezer/lr": "^0.15.4"
+  },
+  "devDependencies": {
+    "prettier": "2.4.1",
+    "rollup": "^2.58.3",
+    "@rollup/plugin-node-resolve": "^13.0.6"
+  }
 }
