@@ -1,2 +1,2 @@
 import "./editor.js";
-// import "./interpreter.js";
+import "./interpreter.js";
