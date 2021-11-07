@@ -11,8 +11,7 @@ function tokenize(str) {
   // 3. A string started by a double quote. (String Literals)
   // 4. Any part of one line starting with a semi-colon. (Comment)
   // 5. Any sequence of characters not from "[]{}()'`~^@". (Atoms)
-  const re =
-    /[\s,]*([()]|"(?:\\.|[^\\"])*"?|;.*|[^\s\[\]{}('"`,;)]*)/g;
+  const re = /[\s,]*([()]|"(?:\\.|[^\\"])*"?|;.*|[^\s\[\]{}('"`,;)]*)/g;
   let tokens = [];
   let token;
 
@@ -33,28 +32,36 @@ function parse(tokens, index) {
 
   switch (currentToken[0]) {
     // Comments
-  case ";":
-    return null;
-    break;
+    case ";":
+      return null;
+      break;
     // Lists
-  case ")":
-    throw new Error("unexpected ')'");
-  case "(":
-    ast.type = "list";
+    case ")":
+      throw new Error("unexpected ')'");
+    case "(":
+      ast.type = "list";
 
-    while (tokens[index] != ")") {
-      const [child, new_index] = parse(tokens, index);
-      ast.children.push(child);
-      index = new_index;
-    }
+      while (tokens[index] != ")") {
+        const [child, new_index] = parse(tokens, index);
+        ast.children.push(child);
+        index = new_index;
+      }
 
-    index++;
-    break;
+      index++;
+      break;
     // Atoms
-  default:
-    ast.type = "atom";
-    ast.value = currentToken;
-    break;
+    default:
+      if (currentToken.match(/-?\d+/)) {
+        ast.type = "integer";
+        ast.value = Number.parseInt(currentToken);
+      } else if (currentToken.match(/[a-z]+/)) {
+        ast.type = "symbol";
+        ast.value = currentToken;
+      } else {
+        throw new Error("'" + currentToken + "' could not be parsed.");
+      }
+
+      break;
   }
 
   // Returns the ast starting at the given index, and the index of the token
@@ -68,8 +75,36 @@ function iRead(text) {
   return ast;
 }
 
+///////////////////////////////////////////////////////////////////////////////
+//                                    Eval                                   //
+///////////////////////////////////////////////////////////////////////////////
+
 function iEval(ast, env) {
-  return ast;
+  let result;
+
+  switch (ast.type) {
+    case "list":
+      let evaluatedChildren = ast.children.map((c) => iEval(c, env));
+      let f = evaluatedChildren.shift();
+      let resultValue = f.apply(null, evaluatedChildren);
+      result = { type: "atom", value: resultValue };
+      break;
+    case "integer":
+      result = ast.value;
+      break;
+    case "symbol":
+      if (ast.value in env) {
+        result = env[ast.value];
+      } else {
+        throw new Error("Symbol '" + ast.value + "' not found in scope.");
+      }
+      break;
+    default:
+      throw new Error("Type '" + ast.type + "' unrecognized.");
+      break;
+  }
+
+  return result;
 }
 
 function printAST(ast) {
@@ -77,15 +112,15 @@ function printAST(ast) {
   var result = "";
 
   switch (currentType) {
-  case "list":
-    result = "(" + ast.children.map(printAST).join(" ") + ")";
-    break;
-  case "atom":
-    result = ast.value;
-    break;
+    case "list":
+      result = "(" + ast.children.map(printAST).join(" ") + ")";
+      break;
+    case "atom":
+      result = ast.value;
+      break;
     // Atoms
-  default:
-    break;
+    default:
+      break;
   }
 
   return result;
@@ -95,8 +130,18 @@ function iPrint(exp) {
   return printAST(exp);
 }
 
+///////////////////////////////////////////////////////////////////////////////
+//                                    REPL                                   //
+///////////////////////////////////////////////////////////////////////////////
+const replEnv = {
+  add: (a, b) => a + b,
+  subtract: (a, b) => a - b,
+  multiply: (a, b) => a * b,
+  divide: (a, b) => a / b,
+};
+
 function interpret(text) {
-  return iPrint(iEval(iRead(text), {}));
+  return iPrint(iEval(iRead(text), replEnv));
 }
 
 const interpButton = document.getElementById("interp-button");
