@@ -79,23 +79,98 @@ function iRead(text) {
 //                                    Eval                                   //
 ///////////////////////////////////////////////////////////////////////////////
 
+class Env {
+  parentEnv;
+  map;
+
+  constructor(parentEnv) {
+    this.parentEnv = parentEnv;
+    this.map = new Map();
+  }
+
+  set(key, value) {
+    this.map.set(key, value);
+  }
+
+  setFromObject(o) {
+    Object.entries(o).forEach(([key, value]) => {
+      this.map.set(key, value);
+    });
+  }
+
+  get(symbol) {
+    let localResult = this.map.get(symbol);
+
+    if (localResult != undefined) {
+      return localResult;
+    } else if (this.parentEnv != undefined) {
+      return this.parentEnv.get(symbol);
+    } else {
+      return null;
+    }
+  }
+}
+
+function evalList(ast, env) {
+  let f = ast.children[0];
+  let result;
+
+  switch (f.value) {
+    case "let":
+      let letEnv = new Env(env);
+      let bindList = ast.children[1];
+
+      if (bindList.type != "list") {
+        throw new Error("First argument to bind must be a list.");
+      }
+
+      bindList.children.forEach((bindAST) => {
+        if (bindAST.type != "list" && bindAST.children.length != 2) {
+          throw new Error("First argument to bind is invalid.");
+        }
+
+        let bindKey = bindAST.children.shift();
+
+        if (bindKey.type != "symbol") {
+          throw new Error("Cannot bind to Non-Symbol.");
+        }
+
+        let bindValue = bindAST.children.shift();
+        letEnv.set(bindKey.value, iEval(bindValue, env));
+      });
+
+      let body = ast.children[2];
+      result = iEval(body, letEnv);
+      break;
+    case "set!":
+      let bindKey = ast.children[1].value;
+      let bindValueAST = ast.children[2];
+      let bindValue = iEval(bindValueAST, env);
+      env.set(bindKey, bindValue);
+      result = bindValue;
+      break;
+    default:
+      let evaluatedChildren = ast.children.map((c) => iEval(c, env));
+      let func = evaluatedChildren[0];
+      result = func.apply(null, evaluatedChildren.slice(1));
+      break;
+  }
+
+  return result;
+}
+
 function iEval(ast, env) {
   let result;
 
   switch (ast.type) {
     case "list":
-      let evaluatedChildren = ast.children.map((c) => iEval(c, env));
-      let f = evaluatedChildren.shift();
-      let resultValue = f.apply(null, evaluatedChildren);
-      result = { type: "atom", value: resultValue };
+      result = evalList(ast, env);
       break;
     case "integer":
       result = ast.value;
       break;
     case "symbol":
-      if (ast.value in env) {
-        result = env[ast.value];
-      } else {
+      if ((result = env.get(ast.value)) == null) {
         throw new Error("Symbol '" + ast.value + "' not found in scope.");
       }
       break;
@@ -118,8 +193,8 @@ function printAST(ast) {
     case "atom":
       result = ast.value;
       break;
-    // Atoms
     default:
+      result = ast;
       break;
   }
 
@@ -133,12 +208,15 @@ function iPrint(exp) {
 ///////////////////////////////////////////////////////////////////////////////
 //                                    REPL                                   //
 ///////////////////////////////////////////////////////////////////////////////
-const replEnv = {
+const replEnvObject = {
   add: (a, b) => a + b,
   subtract: (a, b) => a - b,
   multiply: (a, b) => a * b,
   divide: (a, b) => a / b,
 };
+
+const replEnv = new Env();
+replEnv.setFromObject(replEnvObject);
 
 function interpret(text) {
   return iPrint(iEval(iRead(text), replEnv));
