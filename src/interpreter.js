@@ -123,6 +123,81 @@ class Env {
   }
 }
 
+function evalLet(args, env) {
+  let letEnv = new Env(env);
+  let bindList = args[0];
+
+  if (bindList.type != "list") {
+    throw new Error("First argument to bind must be a list.");
+  }
+
+  bindList.children.forEach((bindAST) => {
+    if (bindAST.type != "list" && bindAST.children.length != 2) {
+      throw new Error("First argument to bind is invalid.");
+    }
+
+    let bindKey = bindAST.children.shift();
+
+    if (bindKey.type != "symbol") {
+      throw new Error("Cannot bind to Non-Symbol.");
+    }
+
+    let bindValue = bindAST.children.shift();
+    letEnv.set(bindKey.value, iEval(bindValue, env));
+  });
+
+  let body = args[1];
+  return iEval(body, letEnv);
+}
+
+function evalSet(args, env) {
+  let bindKey = args[0].value;
+  let bindValueAST = args[1];
+  let bindValue = iEval(bindValueAST, env);
+  env.set(bindKey, bindValue);
+  return bindValue;
+}
+
+function evalDo(args, env) {
+  let result;
+
+  args.forEach((a) => {
+    result = iEval(a, env);
+  });
+
+  return result;
+}
+
+function evalIf(args, env) {
+  if (args.length != 2 && args.length != 3) {
+    throw new Error('Invalid "if" call.');
+  }
+
+  let cond = iEval(args[0], env);
+  let thenExp = args[1];
+  let elseExp = args[2];
+
+  if (cond === null || cond === false) {
+    return elseExp !== undefined ? iEval(elseExp, env) : null;
+  } else {
+    return iEval(thenExp, env);
+  }
+}
+
+function evalFunction(args, env) {
+  if (args.length != 2) {
+    throw new Error('Invalid "function" call.');
+  }
+
+  let fArgs = args[0].children.map((c) => c.value);
+  let fBody = args[1];
+
+  return function () {
+    let fEnv = new Env(env, fArgs, arguments);
+    return iEval(fBody, fEnv);
+  };
+}
+
 function evalList(ast, env) {
   let f = ast.children[0];
   let args = ast.children.slice(1);
@@ -130,70 +205,19 @@ function evalList(ast, env) {
 
   switch (f.value) {
     case "let":
-      let letEnv = new Env(env);
-      let bindList = args[0];
-
-      if (bindList.type != "list") {
-        throw new Error("First argument to bind must be a list.");
-      }
-
-      bindList.children.forEach((bindAST) => {
-        if (bindAST.type != "list" && bindAST.children.length != 2) {
-          throw new Error("First argument to bind is invalid.");
-        }
-
-        let bindKey = bindAST.children.shift();
-
-        if (bindKey.type != "symbol") {
-          throw new Error("Cannot bind to Non-Symbol.");
-        }
-
-        let bindValue = bindAST.children.shift();
-        letEnv.set(bindKey.value, iEval(bindValue, env));
-      });
-
-      let body = args[1];
-      result = iEval(body, letEnv);
+      result = evalLet(args, env);
       break;
     case "set!":
-      let bindKey = args[0].value;
-      let bindValueAST = args[1];
-      let bindValue = iEval(bindValueAST, env);
-      env.set(bindKey, bindValue);
-      result = bindValue;
+      result = evalSet(args, env);
       break;
     case "do":
-      args.forEach((a) => {
-        result = iEval(a, env);
-      });
+      result = evalDo(args, env);
       break;
     case "if":
-      if (args.length != 2 && args.length != 3) {
-        throw new Error('Invalid "if" call.');
-      }
-
-      let cond = iEval(args[0], env);
-      let thenExp = args[1];
-      let elseExp = args[2];
-
-      if (cond === null || cond === false) {
-        result = elseExp !== undefined ? iEval(elseExp, env) : null;
-      } else {
-        result = iEval(thenExp, env);
-      }
+      result = evalIf(args, env);
       break;
     case "function":
-      if (args.length != 2) {
-        throw new Error('Invalid "function" call.');
-      }
-
-      let fArgs = args[0].children.map((c) => c.value);
-      let fBody = args[1];
-
-      result = function () {
-        let fEnv = new Env(env, fArgs, arguments);
-        return iEval(fBody, fEnv);
-      };
+      result = evalFunction(args, env);
       break;
     default:
       let evaluatedChildren = ast.children.map((c) => iEval(c, env));
