@@ -54,6 +54,12 @@ function parse(tokens, index) {
       if (currentToken.match(/-?\d+/)) {
         ast.type = "integer";
         ast.value = Number.parseInt(currentToken);
+      } else if (currentToken.match(/(true|false)/)) {
+        ast.type = "boolean";
+        ast.value = currentToken == "true";
+      } else if (currentToken === "null") {
+        ast.type = "null";
+        ast.value = null;
       } else if (currentToken.match(/[a-z]+/)) {
         ast.type = "symbol";
         ast.value = currentToken;
@@ -83,9 +89,15 @@ class Env {
   parentEnv;
   map;
 
-  constructor(parentEnv) {
+  constructor(parentEnv, symbols, values) {
     this.parentEnv = parentEnv;
     this.map = new Map();
+
+    if (symbols && values) {
+      symbols.forEach((s, i) => {
+        this.map.set(s, values[i]);
+      });
+    }
   }
 
   set(key, value) {
@@ -113,12 +125,13 @@ class Env {
 
 function evalList(ast, env) {
   let f = ast.children[0];
+  let args = ast.children.slice(1);
   let result;
 
   switch (f.value) {
     case "let":
       let letEnv = new Env(env);
-      let bindList = ast.children[1];
+      let bindList = args[0];
 
       if (bindList.type != "list") {
         throw new Error("First argument to bind must be a list.");
@@ -139,15 +152,48 @@ function evalList(ast, env) {
         letEnv.set(bindKey.value, iEval(bindValue, env));
       });
 
-      let body = ast.children[2];
+      let body = args[1];
       result = iEval(body, letEnv);
       break;
     case "set!":
-      let bindKey = ast.children[1].value;
-      let bindValueAST = ast.children[2];
+      let bindKey = args[0].value;
+      let bindValueAST = args[1];
       let bindValue = iEval(bindValueAST, env);
       env.set(bindKey, bindValue);
       result = bindValue;
+      break;
+    case "do":
+      args.forEach((a) => {
+        result = iEval(a, env);
+      });
+      break;
+    case "if":
+      if (args.length != 2 && args.length != 3) {
+        throw new Error('Invalid "if" call.');
+      }
+
+      let cond = iEval(args[0], env);
+      let thenExp = args[1];
+      let elseExp = args[2];
+
+      if (cond === null || cond === false) {
+        result = elseExp !== undefined ? iEval(elseExp, env) : null;
+      } else {
+        result = iEval(thenExp, env);
+      }
+      break;
+    case "function":
+      if (args.length != 2) {
+        throw new Error('Invalid "function" call.');
+      }
+
+      let fArgs = args[0].children.map((c) => c.value);
+      let fBody = args[1];
+
+      result = function () {
+        let fEnv = new Env(env, fArgs, arguments);
+        return iEval(fBody, fEnv);
+      };
       break;
     default:
       let evaluatedChildren = ast.children.map((c) => iEval(c, env));
@@ -166,6 +212,8 @@ function iEval(ast, env) {
     case "list":
       result = evalList(ast, env);
       break;
+    case "null":
+    case "boolean":
     case "integer":
       result = ast.value;
       break;
