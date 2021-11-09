@@ -56,7 +56,7 @@ const theme = EditorView.theme({
   },
 });
 
-const editor = new EditorView({
+export const editor = new EditorView({
   state: EditorState.create({
     extensions: [ourLanguageSupport, basicSetup, theme],
   }),
