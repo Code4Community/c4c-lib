@@ -1,4 +1,8 @@
 {
+  "name": "c4c-editor-and-interpreter",
+  "version": "0.0.1",
+  "description": "A language that is easily embedded in JavaScript games and an editor for that language.",
+  "main": "src/index.js",
   "scripts": {
     "build": "node_modules\\.bin\\rollup -c",
     "watch": "node_modules\\.bin\\rollup -c -w"

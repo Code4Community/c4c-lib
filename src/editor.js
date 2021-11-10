@@ -30,7 +30,6 @@ const ourParserWithMetadata = ourParser.configure({
   ],
 });
 
-// Codemirror Support for Our Language
 const ourLanguage = LRLanguage.define({
   parser: ourParserWithMetadata,
   languageData: {
@@ -46,19 +45,47 @@ const ourLanguage = LRLanguage.define({
 
 const ourLanguageSupport = new LanguageSupport(ourLanguage);
 
-// Creating the Editor View and Initial State
 const theme = EditorView.theme({
   ".cm-content": {
     fontSize: "1.5em",
     fontWeight: "500",
-    fontFamily: "'Oswald'",
+    fontFamily: "Oswald",
     color: "black",
   },
 });
 
-export const editor = new EditorView({
-  state: EditorState.create({
-    extensions: [ourLanguageSupport, basicSetup, theme],
-  }),
-  parent: document.getElementById("editor"),
-});
+var editor;
+
+function create(parentObject) {
+  editor = new EditorView({
+    state: EditorState.create({
+      extensions: [ourLanguageSupport, basicSetup, theme],
+    }),
+    parent: parentObject,
+  });
+
+  return editor;
+}
+
+function setText(s) {
+  let doc = editor.state.doc;
+
+  const transaction = editor.state.update({
+    changes: [
+      { from: 0, to: doc.length },
+      { from: 0, insert: s },
+    ],
+  });
+
+  editor.dispatch(transaction);
+
+  console.log(transaction);
+
+  return transaction;
+}
+
+function getText() {
+  return editor.state.doc.toString();
+}
+
+export { create, getText, setText };

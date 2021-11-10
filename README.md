@@ -3,7 +3,46 @@
 Many Code 4 Community Modules need a solution to create a simple custom programming language that interfaces with Phaser or another JS package along with an editor that can be inserted into HTML.  This project intends to standardize this project and make creating a simple language and editor easy.  This project can be used with both Phaser and non-Phaser projects as seen in the examples directory.
 
 ## Using this library
-1.  ...
+1.  Install this library in your project. You can do that from github or from a local directory. For local development, the directory is best. These exact commands may not work.
+
+        npm install --save code4community/code-editor-and-interpreter
+        
+    OR
+    
+        npm install --save file://$HOME/school/c4c-club/code-editor-and-interpreter/
+
+2.  Create the editor.
+
+    ```javascript
+    // Create the C4C editor, inside the given element.
+    C4C.editor.create(document.body);
+    ```
+    
+3.  Create some javascript functions you would like to expose to the this library's language. For our example, the javascript function just creates an alert.
+
+    ```javascript
+    // Define new function and store it in the symbol "alert-hello". This
+    // function can now be called from our little language.
+    C4C.interpreter.define("alert-hello", () => {
+      alert("hello");
+    });
+    ```
+
+4.  Expose some way for your user to run the interpreter. For our example, the user can just on click a sprite.
+
+    ```javascript
+    // Create some interface to running the interpreter.
+    const logo = this.add.image(400, 150, 'logo');
+
+    logo.setInteractive();
+    logo.on("pointerdown", () => {
+      const programText = C4C.editor.getText();
+      // HERE'S THE IMPORTANT PART!!
+      C4C.interpreter.run(programText);
+    });
+    ```
+
+See more in our example project.
 
 ## Development Notes
 ### Helpful Links

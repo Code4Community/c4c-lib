@@ -1,5 +1,3 @@
-import { editor } from "./editor.js";
-
 ///////////////////////////////////////////////////////////////////////////////
 //                                   Reader                                  //
 ///////////////////////////////////////////////////////////////////////////////
@@ -86,9 +84,6 @@ function iRead(text) {
 ///////////////////////////////////////////////////////////////////////////////
 
 class Env {
-  parentEnv;
-  map;
-
   constructor(parentEnv, symbols, values) {
     this.parentEnv = parentEnv;
     this.map = new Map();
@@ -101,7 +96,7 @@ class Env {
   }
 
   set(key, value) {
-    this.map.set(key, value);
+    return this.map.set(key, value);
   }
 
   setFromObject(o) {
@@ -255,6 +250,10 @@ function iEval(ast, env) {
 }
 
 function printAST(ast) {
+  if (!ast) {
+    return null;
+  }
+
   const currentType = ast.type;
   var result = "";
 
@@ -278,26 +277,24 @@ function iPrint(exp) {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-//                                    REPL                                   //
+//                                 Interface                                 //
 ///////////////////////////////////////////////////////////////////////////////
-const replEnvObject = {
+const primitivesObject = {
   add: (a, b) => a + b,
   subtract: (a, b) => a - b,
   multiply: (a, b) => a * b,
   divide: (a, b) => a / b,
 };
 
-const replEnv = new Env();
-replEnv.setFromObject(replEnvObject);
+const topLevelEnv = new Env();
+topLevelEnv.setFromObject(primitivesObject);
 
-function interpret(text) {
-  return iPrint(iEval(iRead(text), replEnv));
+function define(key, value) {
+  return topLevelEnv.set(key, value);
 }
 
-const interpButton = document.getElementById("interp-button");
+function run(text) {
+  return iPrint(iEval(iRead(text), topLevelEnv));
+}
 
-interpButton.addEventListener("click", () => {
-  const lines = editor.state.doc.text;
-  const text = lines.join("\n");
-  console.log(interpret(text));
-});
+export { define, run };
