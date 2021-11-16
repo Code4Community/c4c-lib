@@ -30,6 +30,8 @@ const ourParserWithMetadata = ourParser.configure({
   ],
 });
 
+console.log(ourParserWithMetadata.parse("if true move end"))
+
 const ourLanguage = LRLanguage.define({
   parser: ourParserWithMetadata,
   languageData: {
@@ -66,6 +68,8 @@ function create(parentObject) {
 
   return editor;
 }
+
+create(document.getElementById("editor"))
 
 function setText(s) {
   let doc = editor.state.doc;
