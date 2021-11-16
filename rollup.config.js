@@ -2,9 +2,9 @@ import { nodeResolve } from "@rollup/plugin-node-resolve";
 import { lezer } from "@lezer/generator/rollup";
 
 export default {
-  input: "src/index.js",
+  input: "src/testing.js",
   output: {
-    file: "dist/index.bundle.js",
+    file: "dist/main.bundle.js",
     format: "iife",
   },
   plugins: [nodeResolve(), lezer()],
