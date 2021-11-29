@@ -69,8 +69,6 @@ function create(parentObject) {
   return editor;
 }
 
-create(document.getElementById("editor"))
-
 function setText(s) {
   let doc = editor.state.doc;
 
@@ -82,8 +80,6 @@ function setText(s) {
   });
 
   editor.dispatch(transaction);
-
-  console.log(transaction);
 
   return transaction;
 }
