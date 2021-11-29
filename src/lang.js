@@ -2,16 +2,15 @@
 import {LRParser} from "@lezer/lr"
 export const parser = LRParser.deserialize({
   version: 13,
-  states: "$hQYQPOOOhQPO'#C`OmQPO'#CbOOQO'#Cj'#CjOOQO'#Cd'#CdQYQPOOOYQPO,58zOYQPO,58|OOQO-E6b-E6bOrQPO1G.fOzQPO1G.hO!PQPO'#CeOrQPO7+$QO!UQPO'#CfO!ZQPO7+$QOOQO7+$S7+$SOYQPO,59POOQO-E6c-E6cO!cQPO<<GlOYQPO,59QOOQO-E6d-E6dOOQO<<Gl<<GlO!kQPO1G.kOOQOAN=WAN=WO!pQPO1G.lOOQO7+$V7+$VOOQO7+$W7+$W",
-  stateData: "!u~O]OSPOS~ORROVQO`POcQO~OTUO~OdVO~OaZOb]O~O__O~OT`O~OTcO~O_eOb]O~O_gOb]O~O_iO~O_jO~O",
-  goto: "!`_PPPP`P`PhntPPP!O]ROTUV`cQTORWTQ[XRa[Q^XQb[Td^bSSOTQXUQYVQf`Rhc",
-  nodeNames: "⚠ Comment Program Statement IfExpression Condition TimesExpression Number",
-  maxTerm: 20,
-  skippedNodes: [0,1],
-  repeatNodeCount: 3,
-  tokenData: "(R~RbX^!Zpq!Z!P!Q#O!Q![#a#X#Y#i#Y#Z$n#]#^&T#^#_&`#a#b&w#h#i'Z#y#z!Z$f$g!Z#BY#BZ!Z$IS$I_!Z$I|$JO!Z$JT$JU!Z$KV$KW!Z&FU&FV!Z~!`Y]~X^!Zpq!Z#y#z!Z$f$g!Z#BY#BZ!Z$IS$I_!Z$I|$JO!Z$JT$JU!Z$KV$KW!Z&FU&FV!Z~#RP!P!Q#U~#ZQP~OY#UZ~#U~#fPV~!Q![#a~#lQ#`#a#r#b#c$c~#uQ#]#^#{#g#h$W~$OP#Y#Z$R~$WOa~~$ZP#X#Y$^~$cOb~~$fP#W#X$i~$nO_~~$qQ#T#U$w#c#d%`~$zP#`#a$}~%QP#g#h%T~%WP#X#Y%Z~%`OT~~%cP#f#g%f~%iP#X#Y%l~%oP#j#k%r~%uP#X#Y%x~%{P#f#g&O~&TOc~~&WP#Y#Z&Z~&`O`~~&cP#i#j&f~&iP#a#b&l~&oP#d#e&r~&wOR~~&zP#c#d&}~'QP#j#k'T~'WP#X#Y&r~'^Q#]#^'d#f#g'{~'gP#a#b'j~'mP#X#Y'p~'sP#g#h'v~'{Od~~(OP#i#j%T",
+  states: "!WOYQPOOOkQPO'#CbOOQO'#Ch'#ChQOQPOOOOQO'#Cc'#CcOrQPO,58|OOQO,58|,58|OOQO-E6a-E6aOOQO1G.h1G.h",
+  stateData: "y~OYOSZOS~OQQORQOSQOTQO]PO~O^UO~PYO^WO~PYO",
+  goto: "p]PPPPPP^cPPPPiVQOPTQTPRVTQROTSPT",
+  nodeNames: "⚠ Program Boolean Null Symbol Number List",
+  maxTerm: 14,
+  skippedNodes: [0],
+  repeatNodeCount: 1,
+  tokenData: "(u~RgX^!jpq!jxy#_yz#d}!O#i!Q![#w!]!^$P!c!}#i#T#Y#i#Y#Z$[#Z#b#i#b#c&]#c#h#i#h#i'{#i#o#i#y#z!j$f$g!j#BY#BZ!j$IS$I_!j$I|$JO!j$JT$JU!j$KV$KW!j&FU&FV!j~!oYY~X^!jpq!j#y#z!j$f$g!j#BY#BZ!j$IS$I_!j$I|$JO!j$JT$JU!j$KV$KW!j&FU&FV!j~#dO]~~#iO^~~#nRS~}!O#i!c!}#i#T#o#i~#|PT~!Q![#w~$UQZ~OY$PZ~$P~$aSS~}!O#i!c!}#i#T#U$m#U#o#i~$rTS~}!O#i!c!}#i#T#`#i#`#a%R#a#o#i~%WTS~}!O#i!c!}#i#T#g#i#g#h%g#h#o#i~%lTS~}!O#i!c!}#i#T#X#i#X#Y%{#Y#o#i~&SRQ~S~}!O#i!c!}#i#T#o#i~&bTS~}!O#i!c!}#i#T#i#i#i#j&q#j#o#i~&vTS~}!O#i!c!}#i#T#`#i#`#a'V#a#o#i~'[TS~}!O#i!c!}#i#T#`#i#`#a'k#a#o#i~'rRR~S~}!O#i!c!}#i#T#o#i~(QTS~}!O#i!c!}#i#T#f#i#f#g(a#g#o#i~(fTS~}!O#i!c!}#i#T#i#i#i#j%g#j#o#i",
   tokenizers: [0],
-  topRules: {"Program":[0,2]},
-  tokenPrec: 0,
-  termNames: {"0":"⚠","1":"Comment","2":"@top","3":"Statement","4":"IfExpression","5":"Condition","6":"TimesExpression","7":"Number","8":"expression+","9":"(\"elif\" Condition expression \"end\")+","10":"(\"else\" Condition expression \"end\")+","11":"␄","12":"%mainskip","13":"space","14":"expression","15":"\"end\"","16":"\"if\"","17":"\"elif\"","18":"\"else\"","19":"\"forever\"","20":"\"times\""}
+  topRules: {"Program":[0,1]},
+  tokenPrec: 0
 })

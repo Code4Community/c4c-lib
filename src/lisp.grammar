@@ -1,0 +1,17 @@
+@top Program { expression }
+
+@skip { space | comment }
+
+expression { Boolean | Null | Symbol | Number | List }
+
+List { "(" expression* ")" }
+
+@tokens {
+  space { std.whitespace+ }
+  comment { ";" ![\n]* }
+  Boolean { "true" | "false" }
+  Symbol { $[a-zA-Z\-]+ }
+  Number { std.digit+ }
+  Null { "null" }
+  @precedence { Boolean, Null, Symbol }
+}

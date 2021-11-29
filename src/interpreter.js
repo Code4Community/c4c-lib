@@ -1,82 +1,65 @@
+import { parser } from "./lang.js";
+import { NodeProp } from "@lezer/common";
+
 ///////////////////////////////////////////////////////////////////////////////
-//                                   Reader                                  //
+//                                    Read                                   //
 ///////////////////////////////////////////////////////////////////////////////
 
-function tokenize(str) {
-  // The stateful regular expression for consuming tokens in our language off of
-  // str. First consume all the whitespace, then capture one of the following things:
-  // 2. Any character of the string "()". (Control Characters)
-  // 3. A string started by a double quote. (String Literals)
-  // 4. Any part of one line starting with a semi-colon. (Comment)
-  // 5. Any sequence of characters not from "[]{}()'`~^@". (Atoms)
-  const re = /[\s,]*([()]|"(?:\\.|[^\\"])*"?|;.*|[^\s\[\]{}('"`,;)]*)/g;
-  let tokens = [];
-  let token;
+function convertLezerTree(cursor) {
+  const node = {
+    type: cursor.name,
+    from: cursor.from,
+    to: cursor.to,
+    children: [],
+  };
 
-  // re.exec(str)[1] is the first string captured by the regex
-  while ((token = re.exec(str)[1]) != "") {
-    if (token[0] === ";") {
-      continue;
+  if (cursor.firstChild()) {
+    do {
+      const child = convertLezerTree(cursor);
+      node.children.push(child);
+    } while (cursor.nextSibling());
+
+    cursor.parent();
+  }
+
+  return node;
+}
+
+function mapOverTree(tree, func) {
+  func(tree);
+
+  tree.children.forEach((t) => {
+    mapOverTree(t, func);
+  });
+}
+
+function parse(str) {
+  const lezerTree = parser.parse(str);
+  const tree = convertLezerTree(lezerTree.cursor());
+
+  mapOverTree(tree, (t) => {
+    const sourceString = str.substring(t.from, t.to);
+    switch (t.type) {
+      case "Number":
+        t.value = Number.parseInt(sourceString);
+        break;
+      case "Boolean":
+        t.value = sourceString == "true" ? true : false;
+        break;
+      case "Null":
+        t.value = null;
+        break;
+      default:
+        t.value = sourceString;
+        break;
     }
-    tokens.push(token);
-  }
+  });
 
-  return tokens;
+  return tree;
 }
 
-function parse(tokens, index) {
-  let currentToken = tokens[index++];
-  const ast = { type: undefined, value: undefined, children: [] };
-
-  switch (currentToken[0]) {
-    // Comments
-    case ";":
-      return null;
-      break;
-    // Lists
-    case ")":
-      throw new Error("unexpected ')'");
-    case "(":
-      ast.type = "list";
-
-      while (tokens[index] != ")") {
-        const [child, new_index] = parse(tokens, index);
-        ast.children.push(child);
-        index = new_index;
-      }
-
-      index++;
-      break;
-    // Atoms
-    default:
-      if (currentToken.match(/-?\d+/)) {
-        ast.type = "integer";
-        ast.value = Number.parseInt(currentToken);
-      } else if (currentToken.match(/(true|false)/)) {
-        ast.type = "boolean";
-        ast.value = currentToken == "true";
-      } else if (currentToken === "null") {
-        ast.type = "null";
-        ast.value = null;
-      } else if (currentToken.match(/[a-z]+/)) {
-        ast.type = "symbol";
-        ast.value = currentToken;
-      } else {
-        throw new Error("'" + currentToken + "' could not be parsed.");
-      }
-
-      break;
-  }
-
-  // Returns the ast starting at the given index, and the index of the token
-  // following the ast.
-  return [ast, index];
-}
-
-function iRead(text) {
-  const tokens = tokenize(text);
-  const [ast] = parse(tokens, 0);
-  return ast;
+function iRead(str) {
+  return parse(str);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -138,17 +121,17 @@ function evalLet(args, env) {
     }
 
     let bindValue = bindAST.children.shift();
-    letEnv.set(bindKey.value, iEval(bindValue, env));
+    letEnv.set(bindKey.value, evalAST(bindValue, env));
   });
 
   let body = args[1];
-  return iEval(body, letEnv);
+  return evalAST(body, letEnv);
 }
 
 function evalSet(args, env) {
   let bindKey = args[0].value;
   let bindValueAST = args[1];
-  let bindValue = iEval(bindValueAST, env);
+  let bindValue = evalAST(bindValueAST, env);
   env.set(bindKey, bindValue);
   return bindValue;
 }
@@ -157,7 +140,7 @@ function evalDo(args, env) {
   let result;
 
   args.forEach((a) => {
-    result = iEval(a, env);
+    result = evalAST(a, env);
   });
 
   return result;
@@ -168,14 +151,14 @@ function evalIf(args, env) {
     throw new Error('Invalid "if" call.');
   }
 
-  let cond = iEval(args[0], env);
+  let cond = evalAST(args[0], env);
   let thenExp = args[1];
   let elseExp = args[2];
 
   if (cond === null || cond === false) {
-    return elseExp !== undefined ? iEval(elseExp, env) : null;
+    return elseExp !== undefined ? evalAST(elseExp, env) : null;
   } else {
-    return iEval(thenExp, env);
+    return evalAST(thenExp, env);
   }
 }
 
@@ -189,7 +172,7 @@ function evalFunction(args, env) {
 
   return function () {
     let fEnv = new Env(env, fArgs, arguments);
-    return iEval(fBody, fEnv);
+    return evalAST(fBody, fEnv);
   };
 }
 
@@ -215,7 +198,7 @@ function evalList(ast, env) {
       result = evalFunction(args, env);
       break;
     default:
-      let evaluatedChildren = ast.children.map((c) => iEval(c, env));
+      let evaluatedChildren = ast.children.map((c) => evalAST(c, env));
       let func = evaluatedChildren[0];
       result = func.apply(null, evaluatedChildren.slice(1));
       break;
@@ -224,19 +207,19 @@ function evalList(ast, env) {
   return result;
 }
 
-function iEval(ast, env) {
+function evalAST(ast, env) {
   let result;
 
   switch (ast.type) {
-    case "list":
+    case "List":
       result = evalList(ast, env);
       break;
-    case "null":
-    case "boolean":
-    case "integer":
+    case "Null":
+    case "Boolean":
+    case "Number":
       result = ast.value;
       break;
-    case "symbol":
+    case "Symbol":
       if ((result = env.get(ast.value)) == null) {
         throw new Error("Symbol '" + ast.value + "' not found in scope.");
       }
@@ -248,6 +231,24 @@ function iEval(ast, env) {
 
   return result;
 }
+
+function iEval(programAST, env) {
+  if (programAST.type != "Program") {
+    throw new Error("iEval did not receive syntax tree with type 'Program'");
+  }
+
+  let result;
+
+  programAST.children.forEach((a) => {
+    result = evalAST(a, env);
+  });
+
+  return result;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+//                                   Print                                   //
+///////////////////////////////////////////////////////////////////////////////
 
 function printAST(ast) {
   if (!ast) {
@@ -284,6 +285,7 @@ const primitivesObject = {
   subtract: (a, b) => a - b,
   multiply: (a, b) => a * b,
   divide: (a, b) => a / b,
+  print: (a) => console.log(a),
 };
 
 const topLevelEnv = new Env();
@@ -293,8 +295,8 @@ function define(key, value) {
   return topLevelEnv.set(key, value);
 }
 
-function run(text) {
-  return iPrint(iEval(iRead(text), topLevelEnv));
+function run(str) {
+  return iPrint(iEval(iRead(str), topLevelEnv));
 }
 
 export { define, run };
