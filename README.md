@@ -11,14 +11,18 @@ Many Code 4 Community Modules need a solution to create a simple custom programm
     
         npm install --save file://$HOME/school/c4c-club/code-editor-and-interpreter/
 
-2.  Create the editor.
+2.  Import this library where you need it.
+
+        import C4C from 'c4c-editor-and-interpreter';
+
+3.  Create the editor.
 
     ```javascript
     // Create the C4C editor, inside the given element.
     C4C.editor.create(document.body);
     ```
     
-3.  Create some javascript functions you would like to expose to the this library's language. For our example, the javascript function just creates an alert.
+4.  Create some javascript functions you would like to expose to the this library's language. For our example, the javascript function just creates an alert.
 
     ```javascript
     // Define new function and store it in the symbol "alert-hello". This
@@ -28,7 +32,7 @@ Many Code 4 Community Modules need a solution to create a simple custom programm
     });
     ```
 
-4.  Expose some way for your user to run the interpreter. For our example, the user can just on click a sprite.
+5.  Expose some way for your user to run the interpreter. For our example, the user can just on click a sprite.
 
     ```javascript
     // Create some interface to running the interpreter.
@@ -42,7 +46,7 @@ Many Code 4 Community Modules need a solution to create a simple custom programm
     });
     ```
 
-See more in our example project.
+See more in our [example project](https://github.com/Code4Community/phaser3-language-example).
 
 ## Development Notes
 ### Helpful Links
