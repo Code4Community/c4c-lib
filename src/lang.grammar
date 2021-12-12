@@ -1,19 +1,45 @@
-@top Program { expression* }
+@top Program { Block }
 
-@skip { space | Comment }
+@skip { "," | space | comment }
 
-expression { Statement | IfExpression | TimesExpression}
+Block { statement* }
 
-IfExpression { "if" Condition expression ("elif" Condition expression "end")* ("else" Condition expression "end")+ "end" }
-
-TimesExpression { (Number|"forever") "times" expression "end" }
-
-@tokens { 
-  Condition { "true"|"false" }
-  Statement { "move"|"jump" }
-  Number { std.digit+ }
-  space { std.whitespace+ }
-  Comment { "//" ![\n]* }
+statement {
+  IfStatement { if expression Block (else Block)? end } |
+  TimesStatement { ( Symbol | Number | Forever ) times Block end } |
+  SetStatement { Symbol "=" expression } |
+  expression
 }
 
-@detectDelim
+expression {
+  Symbol |
+  Boolean |
+  Number |
+  Null |
+  CallExpression { Symbol "(" expression* ")" } |
+  Function { function "(" SymbolList ")" Block end }
+}
+
+SymbolList { Symbol* }
+Symbol { identifier }
+
+kw<term> { @specialize<identifier, term> }
+if { kw<"if"> }
+Forever { kw<"forever"> }
+times { kw<"times"> }
+else { kw<"else"> }
+end { kw<"end"> }
+function { kw<"function"> }
+
+@tokens {
+  space { std.whitespace+ }
+  comment { "//" ![\n]* }
+  identifierChar { std.asciiLetter }
+  word { identifierChar (identifierChar | std.digit)* }
+  identifier { word }
+
+  Boolean { "true" | "false" }
+  Number { std.digit+ }
+  Null { "null" }
+  @precedence { Boolean, Null, identifier }
+}

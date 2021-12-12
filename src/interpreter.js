@@ -101,31 +101,14 @@ class Env {
   }
 }
 
-function evalLet(args, env) {
-  let letEnv = new Env(env);
-  let bindList = args[0];
+function evalBlock(args, env) {
+  let result;
 
-  if (bindList.type != "list") {
-    throw new Error("First argument to bind must be a list.");
-  }
-
-  bindList.children.forEach((bindAST) => {
-    if (bindAST.type != "list" && bindAST.children.length != 2) {
-      throw new Error("First argument to bind is invalid.");
-    }
-
-    let bindKey = bindAST.children.shift();
-
-    if (bindKey.type != "symbol") {
-      throw new Error("Cannot bind to Non-Symbol.");
-    }
-
-    let bindValue = bindAST.children.shift();
-    letEnv.set(bindKey.value, evalAST(bindValue, env));
+  args.forEach((a) => {
+    result = evalAST(a, env);
   });
 
-  let body = args[1];
-  return evalAST(body, letEnv);
+  return result;
 }
 
 function evalSet(args, env) {
@@ -136,19 +119,33 @@ function evalSet(args, env) {
   return bindValue;
 }
 
-function evalDo(args, env) {
-  let result;
+function evalTimes(args, env) {
+  if (args.length != 2) {
+    throw new Error('Invalid "times" statement.');
+  }
 
-  args.forEach((a) => {
-    result = evalAST(a, env);
-  });
+  let result = null;
+  let body = args[1];
+
+  if (args[0].type == "Number" || args[0].type == "Symbol") {
+    const times = evalAST(args[0], env);
+    for (let i = 0; i < times; i++) {
+      result = evalAST(body, env);
+    }
+  } else if (args[0].type == "Forever") {
+    while (true) {
+      evalAST(body, env);
+    }
+  } else {
+    throw new Error('Invalid "times" statement.');
+  }
 
   return result;
 }
 
 function evalIf(args, env) {
   if (args.length != 2 && args.length != 3) {
-    throw new Error('Invalid "if" call.');
+    throw new Error('Invalid "if" statement.');
   }
 
   let cond = evalAST(args[0], env);
@@ -164,7 +161,7 @@ function evalIf(args, env) {
 
 function evalFunction(args, env) {
   if (args.length != 2) {
-    throw new Error('Invalid "function" call.');
+    throw new Error('Invalid "function" statement.');
   }
 
   let fArgs = args[0].children.map((c) => c.value);
@@ -176,56 +173,52 @@ function evalFunction(args, env) {
   };
 }
 
-function evalList(ast, env) {
-  let f = ast.children[0];
-  let args = ast.children.slice(1);
-  let result;
-
-  switch (f.value) {
-    case "let":
-      result = evalLet(args, env);
-      break;
-    case "set!":
-      result = evalSet(args, env);
-      break;
-    case "do":
-      result = evalDo(args, env);
-      break;
-    case "if":
-      result = evalIf(args, env);
-      break;
-    case "function":
-      result = evalFunction(args, env);
-      break;
-    default:
-      let evaluatedChildren = ast.children.map((c) => evalAST(c, env));
-      let func = evaluatedChildren[0];
-      result = func.apply(null, evaluatedChildren.slice(1));
-      break;
-  }
-
-  return result;
+function evalCall(args, env) {
+  let evaluatedChildren = args.map((c) => evalAST(c, env));
+  let func = evaluatedChildren[0];
+  return func.apply(null, evaluatedChildren.slice(1));
 }
 
 function evalAST(ast, env) {
   let result;
+  let args = ast.children;
 
   switch (ast.type) {
-    case "List":
-      result = evalList(ast, env);
+    case "Block":
+      result = evalBlock(args, env);
       break;
-    case "Null":
-    case "Boolean":
-    case "Number":
-      result = ast.value;
+    // statements
+    case "TimesStatement":
+      result = evalTimes(args, env);
+      break;
+    case "IfStatement":
+      result = evalIf(args, env);
+      break;
+    case "SetStatement":
+      result = evalSet(args, env);
+      break;
+    // expressions
+    case "CallExpression":
+      result = evalCall(args, env);
+      break;
+    case "Function":
+      result = evalFunction(args, env);
       break;
     case "Symbol":
-      if ((result = env.get(ast.value)) == null) {
+      result = env.get(ast.value);
+      if (result == null) {
         throw new Error("Symbol '" + ast.value + "' not found in scope.");
       }
       break;
+    // tokens
+    case "Boolean":
+    case "Number":
+    case "Null":
+      result = ast.value;
+      break;
+    case "SymbolList":
     default:
-      throw new Error("Type '" + ast.type + "' unrecognized.");
+      throw new Error("Type '" + ast.type + "' unrecognized or unexpected.");
       break;
   }
 
@@ -247,37 +240,6 @@ function iEval(programAST, env) {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-//                                   Print                                   //
-///////////////////////////////////////////////////////////////////////////////
-
-function printAST(ast) {
-  if (!ast) {
-    return null;
-  }
-
-  const currentType = ast.type;
-  var result = "";
-
-  switch (currentType) {
-    case "list":
-      result = "(" + ast.children.map(printAST).join(" ") + ")";
-      break;
-    case "atom":
-      result = ast.value;
-      break;
-    default:
-      result = ast;
-      break;
-  }
-
-  return result;
-}
-
-function iPrint(exp) {
-  return printAST(exp);
-}
-
-///////////////////////////////////////////////////////////////////////////////
 //                                 Interface                                 //
 ///////////////////////////////////////////////////////////////////////////////
 const primitivesObject = {
@@ -296,7 +258,7 @@ function define(key, value) {
 }
 
 function run(str) {
-  return iPrint(iEval(iRead(str), topLevelEnv));
+  return iEval(iRead(str), topLevelEnv);
 }
 
 export { define, run };
