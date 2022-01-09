@@ -5,7 +5,7 @@
 Block { statement* }
 
 statement {
-  IfStatement { if expression Block (else Block)? end } |
+  IfStatement[closedBy="end else"] { if expression Block (else Block)? end } |
   TimesStatement { ( Symbol | Number | Forever ) times Block end } |
   SetStatement { Symbol "=" expression } |
   expression
@@ -17,7 +17,7 @@ expression {
   Number |
   Null |
   CallExpression { Symbol "(" expression* ")" } |
-  Function { function "(" SymbolList ")" Block end }
+  Function[closedBy="end"] { function "(" SymbolList ")" Block end }
 }
 
 SymbolList { Symbol* }
