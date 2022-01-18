@@ -93,6 +93,14 @@ function create(parentObject) {
   return editor;
 }
 
+function hide() {
+  editor.dom.style.visibility = "hidden";
+}
+
+function show() {
+  editor.dom.style.visibility = "visible";
+}
+
 function getDOM() {
   return editor.dom;
 }
@@ -143,4 +151,4 @@ const window = {
   },
 };
 
-export { create, getDOM, getText, setText, window };
+export { create, getDOM, getText, setText, show, hide, window };
