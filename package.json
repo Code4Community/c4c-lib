@@ -4,8 +4,7 @@
   "description": "A language that is easily embedded in JavaScript games and an editor for that language.",
   "main": "src/index.js",
   "scripts": {
-    "build": "node_modules\\.bin\\rollup -c",
-    "watch": "node_modules\\.bin\\rollup -c -w"
+    "grammar": "node_modules/.bin/lezer-generator src/lang.grammar -o src/lang.js"
   },
   "dependencies": {
     "@codemirror/basic-setup": "^0.19.0",
@@ -13,8 +12,6 @@
     "@lezer/lr": "^0.15.4"
   },
   "devDependencies": {
-    "prettier": "2.4.1",
-    "rollup": "^2.58.3",
-    "@rollup/plugin-node-resolve": "^13.0.6"
+    "prettier": "2.4.1"
   }
 }
