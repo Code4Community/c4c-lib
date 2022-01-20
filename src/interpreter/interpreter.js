@@ -1,4 +1,4 @@
-import { parser } from "./lang.js";
+import { parser } from "../lang.js";
 import { NodeProp } from "@lezer/common";
 
 ///////////////////////////////////////////////////////////////////////////////

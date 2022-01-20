@@ -1,6 +1,9 @@
+import { Editor } from "./editor/index.js";
+import { Interpreter } from "./interpreter/index.js";
+
 const C4C = {
-  editor: require("./editor.js"),
-  interpreter: require("./interpreter.js"),
+  Editor: Editor,
+  Interpreter: Interpreter,
 };
 
-module.exports = C4C;
+export default C4C;

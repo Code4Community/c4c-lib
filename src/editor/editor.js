@@ -11,7 +11,7 @@ import {
 } from "@codemirror/language";
 import { styleTags, tags as t } from "@codemirror/highlight";
 import { completeFromList } from "@codemirror/autocomplete";
-import { parser as ourParser } from "./lang.js";
+import { parser as ourParser } from "../lang.js";
 
 const ourParserWithMetadata = ourParser.configure({
   props: [
@@ -80,9 +80,8 @@ const ourTheme = EditorView.theme(
 );
 
 var editor;
-var editorContainer;
 
-function create(parentObject) {
+function create(parentObject, hidden = false) {
   editor = new EditorView({
     state: EditorState.create({
       extensions: [ourLanguageSupport, basicSetup, ourTheme],
@@ -90,19 +89,11 @@ function create(parentObject) {
     parent: parentObject,
   });
 
+  if (hidden) {
+    editor.dom.style.width = "0px";
+  }
+
   return editor;
-}
-
-function hide() {
-  editor.dom.style.visibility = "hidden";
-}
-
-function show() {
-  editor.dom.style.visibility = "visible";
-}
-
-function getDOM() {
-  return editor.dom;
 }
 
 function setText(s) {
@@ -124,31 +115,8 @@ function getText() {
   return editor.state.doc.toString();
 }
 
-const window = {
-  init: function (scene) {
-    editorContainer = document.createElement("div");
-    editorContainer.appendChild(editor.dom);
-    editorContainer.style["min-height"] = "100%";
-    editorContainer.style["width"] = "0%";
-    editorContainer.style["transition"] = "width 0.5s";
+function dom() {
+  return editor.dom;
+}
 
-    const editorObject = scene.add.dom(0, 0, editorContainer);
-    editorObject.setOrigin(0, 0);
-  },
-  open: function () {
-    editorContainer.style["width"] = "40%";
-  },
-  close: function () {
-    editorContainer.style["width"] = "0%";
-  },
-  toggle: function () {
-    const currentWidth = editorContainer.style["width"];
-    if (currentWidth != "40%") {
-      editorContainer.style["width"] = "40%";
-    } else {
-      editorContainer.style["width"] = "0%";
-    }
-  },
-};
-
-export { create, getDOM, getText, setText, show, hide, window };
+export { editor, create, getText, setText, dom };
