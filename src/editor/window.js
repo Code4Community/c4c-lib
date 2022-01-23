@@ -13,6 +13,8 @@ function init(scene) {
   editorObject.setOrigin(0, 0);
 
   editor.dom.style.width = "100%";
+
+  return editorObject;
 }
 
 function open() {
@@ -21,14 +23,18 @@ function open() {
 
 function close() {
   editorContainer.style["width"] = "0%";
+
+  if (editor.hasFocus) {
+    editor.contentDOM.blur();
+  }
 }
 
 function toggle() {
   const currentWidth = editorContainer.style["width"];
   if (currentWidth != "40%") {
-    editorContainer.style["width"] = "40%";
+    open();
   } else {
-    editorContainer.style["width"] = "0%";
+    close();
   }
 }
 

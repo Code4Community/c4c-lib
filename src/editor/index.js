@@ -1,5 +1,5 @@
 import { Window } from "./window.js";
-import { create, dom, getText, setText } from "./editor.js";
+import { create, getText, setText, dom } from "./editor.js";
 
 var Editor = {
   Window: Window,
