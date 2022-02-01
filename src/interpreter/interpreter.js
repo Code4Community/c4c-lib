@@ -206,6 +206,11 @@ function evalAST(ast, env) {
       break;
     case "Symbol":
       result = env.get(ast.value);
+
+      if (result instanceof Function) {
+        result.apply(null, []);
+      }
+
       if (result == null) {
         throw new Error("Symbol '" + ast.value + "' not found in scope.");
       }
