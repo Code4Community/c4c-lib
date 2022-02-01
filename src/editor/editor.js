@@ -57,8 +57,7 @@ const ourLanguage = LRLanguage.define({
 
 const ourLanguageSupport = new LanguageSupport(ourLanguage);
 
-const defaultTheme = EditorView.theme(
-  {
+const defaultThemeObject = {
     "&": {
       color: "black",
       backgroundColor: "white",
@@ -66,13 +65,16 @@ const defaultTheme = EditorView.theme(
     ".cm-content, .cm-gutter": {
       minHeight: "600px",
     }
-  },
-  { dark: false }
-);
+  }
 
 var editor;
 
-function create(parentObject, theme=defaultTheme, hidden = false) {
+function create(parentObject, themeObject=defaultThemeObject, hidden = false) {
+  
+  theme = EditorView.theme(themeObject,
+    { dark: false }
+  );
+
   editor = new EditorView({
     state: EditorState.create({
       extensions: [ourLanguageSupport, basicSetup, theme],
