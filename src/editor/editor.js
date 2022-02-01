@@ -30,6 +30,7 @@ const ourParserWithMetadata = ourParser.configure({
     }),
     indentNodeProp.add({
       IfStatement: continuedIndent({ except: /^else/ }),
+      TimesStatement: continuedIndent(),
       Block: delimitedIndent({ closing: "end" }),
     }),
     foldNodeProp.add({
@@ -55,7 +56,7 @@ const ourLanguage = LRLanguage.define({
 
 const ourLanguageSupport = new LanguageSupport(ourLanguage);
 
-const ourTheme = EditorView.theme(
+const defaultTheme = EditorView.theme(
   {
     "&": {
       color: "black",
@@ -63,28 +64,17 @@ const ourTheme = EditorView.theme(
     },
     ".cm-content, .cm-gutter": {
       minHeight: "600px",
-    },
-    // "&.cm-focused .cm-cursor": {
-    //   borderLeftColor: "#fcb",
-    // },
-    // "&.cm-focused .cm-selectionBackground, ::selection": {
-    //   backgroundColor: "#074",
-    // },
-    // ".cm-gutters": {
-    //   backgroundColor: "#045",
-    //   color: "#222",
-    //   border: "none",
-    // },
+    }
   },
   { dark: false }
 );
 
 var editor;
 
-function create(parentObject, hidden = false) {
+function create(parentObject, theme=defaultTheme, hidden = false) {
   editor = new EditorView({
     state: EditorState.create({
-      extensions: [ourLanguageSupport, basicSetup, ourTheme],
+      extensions: [ourLanguageSupport, basicSetup, theme],
     }),
     parent: parentObject,
   });
