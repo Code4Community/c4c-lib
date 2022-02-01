@@ -27,6 +27,7 @@ const ourParserWithMetadata = ourParser.configure({
       Null: t.null,
       comment: t.lineComment,
       "( )": t.paren,
+      "end": t.end
     }),
     indentNodeProp.add({
       IfStatement: continuedIndent({ except: /^else/ }),
