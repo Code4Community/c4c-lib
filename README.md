@@ -68,3 +68,5 @@ See more in our [example project](https://github.com/Code4Community/phaser3-lang
     - Change colors and fonts of editor
     - Change dimensions of editor
 
+## Contribution Policy
+This project is closed to outside contributions.
