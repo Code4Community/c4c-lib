@@ -32,10 +32,11 @@ const ourParserWithMetadata = ourParser.configure({
     indentNodeProp.add({
       IfStatement: continuedIndent({ except: /^else/ }),
       TimesStatement: continuedIndent(),
+      CallExpression: flatIndent,
       Block: delimitedIndent({ closing: "end" }),
     }),
     foldNodeProp.add({
-      Application: foldInside,
+      "Block": foldInside,
     }),
   ],
 });
