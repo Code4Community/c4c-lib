@@ -71,7 +71,7 @@ var editor;
 
 function create(parentObject, themeObject=defaultThemeObject, hidden = false) {
   
-  theme = EditorView.theme(themeObject,
+  var theme = EditorView.theme(themeObject,
     { dark: false }
   );
 
