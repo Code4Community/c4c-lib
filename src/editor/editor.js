@@ -69,7 +69,11 @@ const defaultThemeObject = {
 
 var editor;
 
-function create(parentObject, themeObject=defaultThemeObject, hidden = false) {
+function create(parentObject, themeObject, hidden) {
+
+  if(themeObject == null) {
+    themeObject = defaultThemeObject;
+  }
   
   var theme = EditorView.theme(themeObject,
     { dark: false }
