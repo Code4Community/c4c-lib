@@ -2,11 +2,11 @@
 
 @skip { "," | space | comment }
 
-Block { statement* end }
+Block { statement* }
 
 statement {
-  IfStatement { if expression Block (else Block)? } |
-  TimesStatement { ( Symbol | Number | Forever ) times Block } |
+  IfStatement[closedBy="end"] { if expression Block (else Block)? end} |
+  TimesStatement[closedBy="end"] { ( Symbol | Number | Forever ) times Block end} |
   SetStatement { Symbol "=" expression } |
   expression
 }
@@ -17,7 +17,7 @@ expression {
   Number |
   Null |
   CallExpression { Symbol "(" expression* ")" } |
-  Function[closedBy="end"] { function "(" SymbolList ")" Block }
+  Function[closedBy="end"] { function "(" SymbolList ")" Block end}
 }
 
 SymbolList { Symbol* }
