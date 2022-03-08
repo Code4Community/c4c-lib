@@ -30,7 +30,7 @@ const ourParserWithMetadata = ourParser.configure({
       "end": t.end
     }),
     indentNodeProp.add({
-      IfStatement: continuedIndent({ except: /^else/ }),
+      IfStatement: continuedIndent({ except: /^\s*(else\b|end\b)/ }),
       TimesStatement: continuedIndent(),
       CallExpression: flatIndent,
       Block: delimitedIndent({ closing: "end" }),
@@ -53,6 +53,7 @@ const ourLanguage = LRLanguage.define({
       { label: "end", type: "keyword" },
       { label: "function", type: "keyword" },
     ]),
+    indentOnInput: /^\s*(else|end)$/,
   },
 });
 
