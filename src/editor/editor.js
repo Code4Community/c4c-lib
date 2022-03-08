@@ -31,7 +31,7 @@ const ourParserWithMetadata = ourParser.configure({
     }),
     indentNodeProp.add({
       IfStatement: continuedIndent({ except: /^\s*(else\b|end\b)/ }),
-      TimesStatement: continuedIndent(),
+      TimesStatement: continuedIndent({ except: /^\s*end\b/ }),
       CallExpression: flatIndent,
       Block: delimitedIndent({ closing: "end" }),
     }),
