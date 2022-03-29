@@ -19,7 +19,7 @@ Many Code 4 Community Modules need a solution to create a simple custom programm
 
     ```javascript
     // Create the C4C editor, inside the given element.
-    C4C.editor.create(document.body);
+    C4C.Editor.create(document.body);
     ```
     
 4.  Create some javascript functions you would like to expose to the this library's language. For our example, the javascript function just creates an alert.
@@ -27,7 +27,7 @@ Many Code 4 Community Modules need a solution to create a simple custom programm
     ```javascript
     // Define new function and store it in the symbol "alert-hello". This
     // function can now be called from our little language.
-    C4C.interpreter.define("alert-hello", () => {
+    C4C.Interpreter.define("alert-hello", () => {
       alert("hello");
     });
     ```
@@ -40,9 +40,9 @@ Many Code 4 Community Modules need a solution to create a simple custom programm
 
     logo.setInteractive();
     logo.on("pointerdown", () => {
-      const programText = C4C.editor.getText();
+      const programText = C4C.Editor.getText();
       // HERE'S THE IMPORTANT PART!!
-      C4C.interpreter.run(programText);
+      C4C.Interpreter.run(programText);
     });
     ```
 
