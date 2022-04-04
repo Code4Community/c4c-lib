@@ -14,6 +14,7 @@ statement {
 expression {
   Symbol |
   Boolean |
+  String |
   Number |
   Null |
   CallExpression { Symbol "(" expression* ")" } |
@@ -41,5 +42,10 @@ function { kw<"function"> }
   Boolean { "true" | "false" }
   Number { std.digit+ }
   Null { "null" }
+  String {
+    '"' (![\\\n"] | "\\" _)* '"' |
+    "'" (![\\\n'] | "\\" _)* "'"
+  }
+
   @precedence { Boolean, Null, identifier }
 }

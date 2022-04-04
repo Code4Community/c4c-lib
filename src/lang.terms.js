@@ -4,7 +4,8 @@ export const
   Block = 2,
   Symbol = 4,
   Boolean = 5,
-  Number = 6,
-  Null = 7,
-  SymbolList = 10,
-  Forever = 12
+  String = 6,
+  Number = 7,
+  Null = 8,
+  SymbolList = 11,
+  Forever = 13

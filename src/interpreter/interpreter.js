@@ -49,6 +49,9 @@ function parse(str) {
       case "Null":
         t.value = null;
         break;
+      case "String":
+        t.value = sourceString.substring(1, sourceString.length - 1);
+        break;
       default:
         t.value = sourceString;
         break;
@@ -219,6 +222,7 @@ function evalAST(ast, env) {
     case "Boolean":
     case "Number":
     case "Null":
+    case "String":
       result = ast.value;
       break;
     case "SymbolList":
