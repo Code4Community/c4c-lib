@@ -8,7 +8,12 @@ statement {
   IfStatement[closedBy="end"] { if expression Block (else Block)? end} |
   TimesStatement[closedBy="end"] { ( Symbol | Number | Forever ) times Block end} |
   SetStatement { Symbol "=" expression } |
-  expression
+  CallStatement
+}
+
+CallStatement {
+  Symbol "(" expression* ")" |
+  Symbol
 }
 
 expression {

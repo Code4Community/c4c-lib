@@ -8,4 +8,5 @@ export const
   Number = 7,
   Null = 8,
   SymbolList = 11,
-  Forever = 13
+  Forever = 13,
+  CallStatement = 15

@@ -203,6 +203,9 @@ function evalAST(ast, env) {
     case "SetStatement":
       result = evalSet(args, env);
       break;
+    case "CallStatement":
+      result = evalCall(args, env);
+      break;
     // expressions
     case "CallExpression":
       result = evalCall(args, env);
@@ -217,9 +220,6 @@ function evalAST(ast, env) {
         throw new Error("Symbol '" + ast.value + "' not found in scope.");
       }
 
-      if (result instanceof Function && result.length == 0) {
-        result = result.apply(null, []);
-      }
       break;
     // tokens
     case "Boolean":
