@@ -94,12 +94,12 @@ class Env {
   get(symbol) {
     let localResult = this.map.get(symbol);
 
-    if (localResult != undefined) {
+    if (localResult !== undefined) {
       return localResult;
-    } else if (this.parentEnv != undefined) {
+    } else if (this.parentEnv !== undefined) {
       return this.parentEnv.get(symbol);
     } else {
-      return null;
+      return undefined;
     }
   }
 }
@@ -118,6 +118,9 @@ function evalSet(args, env) {
   let bindKey = args[0].value;
   let bindValueAST = args[1];
   let bindValue = evalAST(bindValueAST, env);
+
+  if (bindValue === undefined) bindValue = null;
+
   env.set(bindKey, bindValue);
   return bindValue;
 }
@@ -210,7 +213,7 @@ function evalAST(ast, env) {
     case "Symbol":
       result = env.get(ast.value);
 
-      if (result == null) {
+      if (result === undefined) {
         throw new Error("Symbol '" + ast.value + "' not found in scope.");
       }
 
