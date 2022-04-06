@@ -24,10 +24,11 @@ const ourParserWithMetadata = ourParser.configure({
       Function: t.keyword,
       Boolean: t.bool,
       Number: t.integer,
+      String: t.string,
       Null: t.null,
       comment: t.lineComment,
       "( )": t.paren,
-      "end": t.end
+      end: t.end,
     }),
     indentNodeProp.add({
       IfStatement: continuedIndent({ except: /^\s*(else\b|end\b)/ }),
@@ -36,7 +37,7 @@ const ourParserWithMetadata = ourParser.configure({
       Block: delimitedIndent({ closing: "end" }),
     }),
     foldNodeProp.add({
-      "Block": foldInside,
+      Block: foldInside,
     }),
   ],
 });
@@ -72,8 +73,7 @@ const defaultThemeObject = {
 var editor;
 
 function create(parentObject, themeObject, hidden) {
-
-  if(themeObject == null) {
+  if (themeObject == null) {
     themeObject = defaultThemeObject;
   }
   
