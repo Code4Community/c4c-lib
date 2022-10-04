@@ -265,12 +265,24 @@ const primitivesObject = {
 const topLevelEnv = new Env();
 topLevelEnv.setFromObject(primitivesObject);
 
+function createNamespace(parent = topLevelEnv) {
+  return new Env(parent);
+}
+
 function define(key, value) {
   return topLevelEnv.set(key, value);
+}
+
+function defineInNamespace(ns, key, value) {
+  return ns.set(key, value);
 }
 
 function run(str) {
   return iEval(iRead(str), topLevelEnv);
 }
 
-export { define, run };
+function runInNamespace(ns, str) {
+  return iEval(iRead(str), ns);
+}
+
+export { createNamespace, define, defineInNamespace, run, runInNamespace };
