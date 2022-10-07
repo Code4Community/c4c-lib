@@ -1,5 +1,6 @@
 import { iRead } from "./reader.js";
 import { iEval } from "./eval.js";
+import { stepEval } from "./stepEval.js";
 import { Env } from "./env.js";
 
 const primitivesObject = {
@@ -29,22 +30,32 @@ function run(str) {
   return iEval(iRead(str), topLevelEnv);
 }
 
+function stepRun(str, loc) {
+  return stepEval(iRead(str), loc, topLevelEnv);
+}
+
 function runInNamespace(ns, str) {
   return iEval(iRead(str), ns);
 }
 
+function stepRunInNamespace(ns, str, loc) {
+  return stepEval(iRead(str), loc, ns);
+}
 
 const Interpreter = {
   iRead: iRead,
   iEval: iEval,
+  stepEval: stepEval,
 
   createNamespace: createNamespace,
 
   define: define,
   run: run,
+  stepRun: stepRun,
 
   defineInNamespace: defineInNamespace,
   runInNamespace: runInNamespace,
+  stepRunInNamespace: stepRunInNamespace,
 };
 
 export { Interpreter };
