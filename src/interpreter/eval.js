@@ -151,4 +151,4 @@ function iEval(programAST, env) {
   return result;
 }
 
-export { evalIf, evalSet, evalCall, evalFunction, iEval };
+export { evalIf, evalSet, evalCall, evalFunction, evalAST, iEval };

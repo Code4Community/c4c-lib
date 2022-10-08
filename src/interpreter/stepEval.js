@@ -1,9 +1,8 @@
-import { evalIf, evalSet, evalCall, evalFunction } from "./eval.js";
+import { evalSet, evalCall, evalFunction, evalAST } from "./eval.js";
 import { Env } from "./env.js";
 
 function skipToLocation(ast, loc) {
   for (const i in loc) {
-    console.log(i);
     ast = ast.children[i];
   }
 
@@ -14,6 +13,7 @@ function stepEvalBlock(args, loc, env) {
   let result;
   // index of this ast relative to the parent.
   let index = loc[0] || 0;
+  let blockLength = args.length;
   let childPath = loc.slice(1);
   let newLoc;
 
@@ -23,11 +23,10 @@ function stepEvalBlock(args, loc, env) {
   }
 
   // Execute next item of block
-  console.log("evalling item of block");
   [result, newLoc] = stepEvalAST(args.shift(), childPath, env);
 
   // newLoc points outside of the block's children
-  if (newLoc[0] >= args.length) {
+  if (newLoc[0] >= blockLength) {
     newLoc = [index + 1];
   } else {
     newLoc.unshift(index);
@@ -41,23 +40,116 @@ function stepEvalTimes(args, loc, env) {
     throw new Error('Invalid "times" statement.');
   }
 
-  let result = null;
+  let result, childPath;
+  let index = loc[0] || 0;
+  if (loc.slice(1).length != 0) {
+    childPath = loc.slice(1);
+  } else {
+    childPath = [1, 0];
+  }
+
+  let newLoc;
+
   let body = args[1];
 
   if (args[0].type == "Number" || args[0].type == "Symbol") {
     const times = evalAST(args[0], env);
-    for (let i = 0; i < times; i++) {
-      result = evalAST(body, env);
+    let iter = 0;
+
+    if (env.get("iter0")) {
+      iter = env.get("iter0");
     }
+
+    [result, newLoc] = stepEvalAST(body, childPath, env);
+
+    // if reached end of block
+    if (newLoc[0] >= index + 1) {
+      iter += 1;
+
+      if (iter > times) {
+        // if passed through loop enough times, move outside of loop
+        newLoc = [index + 1];
+      } else {
+        // otherwise, move to the beginning of loop
+        newLoc = [index, 0];
+      }
+    } else {
+      newLoc.unshift(index);
+    }
+
+    env.set("iter0", iter);
   } else if (args[0].type == "Forever") {
-    while (true) {
-      evalAST(body, env);
+    [result, newLoc] = stepEvalAST(body, childPath, env);
+
+    // if reached end of block
+    if (newLoc[0] >= index + 1) {
+      // move to beginning of loop
+      newLoc = [index, 0];
+    } else {
+      newLoc.unshift(index);
     }
   } else {
     throw new Error('Invalid "times" statement.');
   }
 
-  return result;
+  return [result, newLoc];
+}
+
+function stepEvalIf(args, loc, env) {
+  if (args.length != 2 && args.length != 3) {
+    throw new Error('Invalid "if" statement.');
+  }
+
+  let result, childPath, cond;
+  let newLoc;
+  let index = loc[0] || 0;
+
+  if (loc.slice(1).length != 0) {
+    childPath = loc.slice(1);
+  } else {
+    childPath = [0];
+  }
+
+  if (childPath[0] == 0) {
+    cond = evalAST(args[0], env);
+    if (cond === null || cond === false) {
+      childPath = [2, 0];
+    } else {
+      childPath = [1, 0];
+    }
+  }
+
+  let elseExp = args[2];
+
+  if (childPath[0] == 1) {
+    let thenExp = args[1];
+    [result, newLoc] = stepEvalAST(thenExp, childPath, env);
+
+    if (newLoc[0] >= thenExp.length) {
+      // move to next thing
+      newLoc = [index + 1];
+    } else {
+      newLoc.unshift(index);
+    }
+  } else if (childPath[0] == 2) {
+    if (elseExp) {
+      [result, newLoc] = stepEvalAST(elseExp, childPath, env);
+
+      if (newLoc[0] >= elseExp.length) {
+        // move to next thing
+        newLoc = [index + 1];
+      } else {
+        newLoc.unshift(index);
+      }
+    } else {
+      result = null;
+      newLoc = [index + 1];
+    }
+  } else {
+    throw new Error("Invalid childpath.");
+  }
+
+  return [result, newLoc];
 }
 
 function stepEvalAST(ast, loc, env) {
@@ -76,14 +168,14 @@ function stepEvalAST(ast, loc, env) {
       [result, newLoc] = stepEvalTimes(args, loc, env);
       break;
     case "IfStatement":
-      result = evalIf(args, env);
+      [result, newLoc] = stepEvalIf(args, loc, env);
       break;
     case "SetStatement":
       result = evalSet(args, env);
+      newLoc = [index + 1];
       break;
     case "CallStatement":
       result = evalCall(args, env);
-      console.log(index);
       newLoc = [index + 1];
       break;
     // expressions
