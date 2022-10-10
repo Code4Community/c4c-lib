@@ -7,7 +7,7 @@ import {
   continuedIndent,
 } from "@codemirror/language";
 import { styleTags, tags as t } from "@codemirror/highlight";
-import { completeFromList } from "@codemirror/autocomplete";
+import { completeFromList, snippetCompletion, completeAnyWord } from "@codemirror/autocomplete";
 import { parser as ourParser } from "../lang.js";
 
 const ourParserWithMetadata = ourParser.configure({
@@ -38,14 +38,19 @@ const ourLanguage = LRLanguage.define({
   parser: ourParserWithMetadata,
   languageData: {
     commentTokens: { line: "//" },
-    autocomplete: completeFromList([
-      { label: "if", type: "keyword" },
-      { label: "forever", type: "keyword" },
-      { label: "times", type: "keyword" },
-      { label: "else", type: "keyword" },
-      { label: "end", type: "keyword" },
-      { label: "function", type: "keyword" },
-    ]),
+    autocomplete: [
+      // completeFromList([
+      //   { label: "if", type: "keyword" },
+      //   { label: "forever", type: "keyword" },
+      //   { label: "times", type: "keyword" },
+      //   { label: "else", type: "keyword" },
+      //   { label: "end", type: "keyword" },
+      //   { label: "function", type: "keyword" },
+      //   { label: "hello", type: "keyword" },
+      // ]),
+
+      snippetCompletion('mySnippet(${one}, ${two})', { label: 'mySnippet' })
+    ],
     indentOnInput: /^\s*(else|end)$/,
   },
 });
