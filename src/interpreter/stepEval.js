@@ -22,8 +22,12 @@ function stepEvalBlock(args, loc, env) {
     args.shift();
   }
 
-  // Execute next item of block
-  [result, newLoc] = stepEvalAST(args.shift(), childPath, env);
+  if (args.length > 0) {
+    // Execute next item of block
+    [result, newLoc] = stepEvalAST(args.shift(), childPath, env);
+  } else {
+    newLoc = [blockLength];
+  }
 
   // newLoc points outside of the block's children
   if (newLoc[0] >= blockLength) {
