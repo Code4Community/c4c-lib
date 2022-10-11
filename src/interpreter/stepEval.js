@@ -49,6 +49,7 @@ function stepEvalTimes(args, loc, env) {
   if (loc.slice(1).length != 0) {
     childPath = loc.slice(1);
   } else {
+    env.set("iter0", 0);
     childPath = [1, 0];
   }
 
@@ -58,11 +59,7 @@ function stepEvalTimes(args, loc, env) {
 
   if (args[0].type == "Number" || args[0].type == "Symbol") {
     const times = evalAST(args[0], env);
-    let iter = 0;
-
-    if (env.get("iter0")) {
-      iter = env.get("iter0");
-    }
+    let iter = env.get("iter0");
 
     [result, newLoc] = stepEvalAST(body, childPath, env);
 
