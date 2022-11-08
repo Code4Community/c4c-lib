@@ -8,6 +8,7 @@ const primitivesObject = {
   subtract: (a, b) => a - b,
   multiply: (a, b) => a * b,
   divide: (a, b) => a / b,
+  not: (a) => !a,
   print: (a) => console.log(a),
 };
 
