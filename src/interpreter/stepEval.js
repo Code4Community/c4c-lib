@@ -126,7 +126,7 @@ function stepEvalIf(args, loc, env) {
     let thenExp = args[1];
     [result, newLoc] = stepEvalAST(thenExp, childPath, env);
 
-    if (newLoc[0] >= thenExp.length) {
+    if (newLoc[0] > 1) {
       // move to next thing
       newLoc = [index + 1];
     } else {
@@ -136,7 +136,7 @@ function stepEvalIf(args, loc, env) {
     if (elseExp) {
       [result, newLoc] = stepEvalAST(elseExp, childPath, env);
 
-      if (newLoc[0] >= elseExp.length) {
+      if (newLoc[0] > 2) {
         // move to next thing
         newLoc = [index + 1];
       } else {
