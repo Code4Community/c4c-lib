@@ -1,3 +1,16 @@
+/**
+   |--------------------------------------------------
+   | This traverses the AST step by step. Each step only evaluates one "atomic"
+   | statement, like an assignment statement or a function call statement. The
+   | stepping follows the semantics of the program. The order of statements
+   | executed with stepEval is the same as the order of statements executed with
+   | normal eval. To use it, you pass in the AST and an index / location into
+   | the AST. It evaluates the first atomic element following that index and
+   | returns the result along with the index for the next atomic element in the
+   | AST.
+   |--------------------------------------------------
+*/
+
 import { evalSet, evalCall, evalFunction, evalAST } from "./eval.js";
 import { Env } from "./env.js";
 
