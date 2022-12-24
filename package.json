@@ -1,7 +1,7 @@
 {
-  "name": "c4c-editor-and-interpreter",
-  "version": "0.0.1",
-  "description": "A language that is easily embedded in JavaScript games and an editor for that language.",
+  "name": "c4c-lib",
+  "version": "0.1.0",
+  "description": "Code4Community's tools for programming games.",
   "main": "src/index.js",
   "scripts": {
     "grammar": "node_modules/.bin/lezer-generator src/lang.grammar -o src/lang.js"
