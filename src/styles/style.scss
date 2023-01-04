@@ -1,0 +1,24 @@
+@use "bootstrap/scss/bootstrap.scss";
+
+.c4c-navbar {
+    @extend .navbar;
+    @extend .navbar-light;
+    @extend .bg-light;
+}
+
+.c4c-container {
+    background-color: white;
+    flex-flow: row nowrap;
+}
+
+.instructions {
+    position:absolute;
+    top: 0;
+    left: 0;
+    font-size: 1.4em;
+}
+
+.game {
+    display: flex;
+    justify-content: center;
+}

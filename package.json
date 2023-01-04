@@ -9,7 +9,8 @@
   "dependencies": {
     "@codemirror/basic-setup": "^0.19.0",
     "@lezer/generator": "^0.15.2",
-    "@lezer/lr": "^0.15.4"
+    "@lezer/lr": "^0.15.4",
+    "bootstrap": "^5.2.3"
   },
   "devDependencies": {
     "prettier": "2.4.1"
