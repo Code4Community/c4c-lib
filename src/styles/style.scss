@@ -5,6 +5,8 @@
     @extend .navbar;
     @extend .navbar-light;
     @extend .bg-light;
+    @extend .py-2;
+    @extend .border-bottom;
 }
 
 .c4c-container {
@@ -14,6 +16,7 @@
 .c4c-row {
     @extend .row;
     @extend .justify-content-center;
+    @extend .py-3
 }
 
 .c4c-col {
@@ -23,6 +26,13 @@
 
 .c4c-game {
     @extend .col-auto
+}
+
+.c4c-disappearing-col {
+    @extend .col;
+    @extend .align-self-center;
+    @extend .d-none;
+    @extend .d-xl-block;
 }
 
 .instructions {
