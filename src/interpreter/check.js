@@ -1,31 +1,34 @@
-import { Env } from "./env.js";
+import {
+  evalBlock,
+  evalSet,
+  evalCall,
+  evalFunction,
+  evalAST,
+  iEval,
+} from "./eval.js";
 
 ///////////////////////////////////////////////////////////////////////////////
 //                                    Eval                                   //
 ///////////////////////////////////////////////////////////////////////////////
 
-function evalBlock(args, env) {
+function checkBlock(args, env) {
   let result;
 
   args.forEach((a) => {
-    result = evalAST(a, env);
+    result = checkAST(a, env);
   });
 
   return result;
 }
 
-function evalSet(args, env) {
-  let bindKey = args[0].value;
-  let bindValueAST = args[1];
-  let bindValue = evalAST(bindValueAST, env);
-
-  if (bindValue === undefined) bindValue = null;
-
-  env.set(bindKey, bindValue);
-  return bindValue;
+function checkCall(args, env) {
+  let evaluatedChildren = args.map((c) => evalAST(c, env));
+  let func = evaluatedChildren[0];
+  return null;
 }
 
-function evalTimes(args, env) {
+// modified version of eval times which only evaluates the loop body once
+function checkTimes(args, env) {
   if (args.length != 2) {
     throw new Error('Invalid "times" statement.');
   }
@@ -33,15 +36,14 @@ function evalTimes(args, env) {
   let result = null;
   let body = args[1];
 
+  console.log("checking times");
+
   if (args[0].type == "Number" || args[0].type == "Symbol") {
     const times = evalAST(args[0], env);
-    for (let i = 0; i < times; i++) {
-      result = evalAST(body, env);
-    }
+    // only eval body once
+    result = evalAST(body, env);
   } else if (args[0].type == "Forever") {
-    while (true) {
-      evalAST(body, env);
-    }
+    evalAST(body, env);
   } else {
     throw new Error('Invalid "times" statement.');
   }
@@ -49,7 +51,7 @@ function evalTimes(args, env) {
   return result;
 }
 
-function evalIf(args, env) {
+function checkIf(args, env) {
   if (args.length != 2 && args.length != 3) {
     throw new Error('Invalid "if" statement.');
   }
@@ -58,60 +60,38 @@ function evalIf(args, env) {
   let thenExp = args[1];
   let elseExp = args[2];
 
-  if (cond === null || cond === false) {
-    return elseExp !== undefined ? evalAST(elseExp, env) : null;
-  } else {
-    return evalAST(thenExp, env);
-  }
+  // eval both the and else
+  evalAST(thenExp, env);
+  return evalAST(elseExp, env);
 }
 
-function evalFunction(args, env) {
-  if (args.length != 2) {
-    throw new Error('Invalid "function" statement.');
-  }
-
-  let fArgs = args[0].children.map((c) => c.value);
-  let fBody = args[1];
-
-  return function () {
-    let fEnv = new Env(env, fArgs, arguments);
-    return evalAST(fBody, fEnv);
-  };
-}
-
-function evalCall(args, env) {
-  let evaluatedChildren = args.map((c) => evalAST(c, env));
-  let func = evaluatedChildren[0];
-  return func.apply(null, evaluatedChildren.slice(1));
-}
-
-function evalAST(ast, env) {
+function checkAST(ast, env) {
   let result;
   let args = ast.children;
 
   switch (ast.type) {
     case "Block":
-      result = evalBlock(args, env);
+      result = checkBlock(args, env);
       break;
     // statements
     case "TimesStatement":
-      result = evalTimes(args, env);
+      result = checkTimes(args, env);
       break;
     case "IfStatement":
-      result = evalIf(args, env);
+      result = checkIf(args, env);
       break;
     case "SetStatement":
       result = evalSet(args, env);
       break;
     case "CallStatement":
-      result = evalCall(args, env);
+      result = checkCall(args, env);
       break;
     // expressions
     case "CallExpression":
-      result = evalCall(args, env);
+      result = checkCall(args, env);
       break;
     case "Function":
-      result = evalFunction(args, env);
+      result = checkFunction(args, env);
       break;
     case "Symbol":
       result = env.get(ast.value);
@@ -137,27 +117,18 @@ function evalAST(ast, env) {
   return result;
 }
 
-function iEval(programAST, env) {
+function iCheck(programAST, env) {
   if (programAST.type != "Program") {
-    throw new Error("iEval did not receive syntax tree with type 'Program'");
+    throw new Error("iCheck did not receive syntax tree with type 'Program'");
   }
 
   let result;
 
   programAST.children.forEach((a) => {
-    result = evalAST(a, env);
+    result = checkAST(a, env);
   });
 
   return result;
 }
 
-export {
-  evalBlock,
-  evalTimes,
-  evalIf,
-  evalSet,
-  evalCall,
-  evalFunction,
-  evalAST,
-  iEval,
-};
+export { checkIf, checkTimes, checkAST, iCheck };

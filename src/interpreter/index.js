@@ -1,5 +1,6 @@
 import { iRead } from "./reader.js";
 import { iEval } from "./eval.js";
+import { iCheck } from "./check.js";
 import { stepEval } from "./stepEval.js";
 import { Env } from "./env.js";
 
@@ -31,6 +32,10 @@ function run(str) {
   return iEval(iRead(str), topLevelEnv);
 }
 
+function check(str) {
+  return iCheck(iRead(str), topLevelEnv);
+}
+
 function stepRun(str, loc) {
   return stepEval(iRead(str), loc, topLevelEnv);
 }
@@ -52,6 +57,7 @@ const Interpreter = {
 
   define: define,
   run: run,
+  check: check,
   stepRun: stepRun,
 
   defineInNamespace: defineInNamespace,
