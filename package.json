@@ -4,6 +4,7 @@
   "description": "Code4Community's tools for programming games.",
   "main": "src/index.js",
   "scripts": {
+    "build": "webpack --config webpack.config.js",
     "grammar": "node_modules/.bin/lezer-generator src/lang.grammar -o src/lang.js"
   },
   "dependencies": {
