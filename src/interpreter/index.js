@@ -65,4 +65,14 @@ const Interpreter = {
   stepRunInNamespace: stepRunInNamespace,
 };
 
-export { Interpreter, stepRun };
+export {
+  Interpreter,
+  createNamespace,
+  define,
+  defineInNamespace,
+  run,
+  check,
+  stepRun,
+  runInNamespace,
+  stepRunInNamespace,
+};
