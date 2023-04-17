@@ -1,5 +1,9 @@
 // import Phaser from "phaser";
-import { createNamespace, stepRunInNamespace } from "../interpreter/index.js";
+import {
+  createNamespace,
+  stepRunInNamespace,
+  checkInNamespace,
+} from "../interpreter/index.js";
 
 class ProgramRunner {
   constructor(config) {
@@ -13,9 +17,12 @@ class ProgramRunner {
     this.programText = t;
   }
 
+  check() {
+    return checkInNamespace(this.namespace, this.programText);
+  }
+
   reset() {
     this.location = [];
-    this.namespace = createNamespace();
   }
 
   step() {

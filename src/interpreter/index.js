@@ -36,6 +36,10 @@ function check(str) {
   return iCheck(iRead(str), topLevelEnv);
 }
 
+function checkInNamespace(ns, str) {
+  return iCheck(iRead(str), ns);
+}
+
 function stepRun(str, loc) {
   return stepEval(iRead(str), loc, topLevelEnv);
 }
@@ -62,6 +66,7 @@ const Interpreter = {
 
   defineInNamespace: defineInNamespace,
   runInNamespace: runInNamespace,
+  checkInNamespace: checkInNamespace,
   stepRunInNamespace: stepRunInNamespace,
 };
 
@@ -74,5 +79,6 @@ export {
   check,
   stepRun,
   runInNamespace,
+  checkInNamespace,
   stepRunInNamespace,
 };
