@@ -1,13 +1,46 @@
 /**
-   |--------------------------------------------------
    | This traverses the AST step by step. Each step only evaluates one "atomic"
    | statement, like an assignment statement or a function call statement. The
    | stepping follows the semantics of the program. The order of statements
    | executed with stepEval is the same as the order of statements executed with
    | normal eval. To use it, you pass in the AST and an index / location into
-   | the AST. It evaluates the first atomic element following that index and
-   | returns the result along with the index for the next atomic element in the
-   | AST.
+   | the AST. It evaluates the first atomic element AT that index and returns
+   | the result along with the index of the NEXT atomic element in the AST to
+   | evaluate.
+
+   | A tree location is a a list of integers. The absolute index of the root
+   | node is [] or [0]. They are equivalent. The absolute index of the root
+   | node's first child is [0, 0], the second child is [0, 1], etc. Sometimes an
+   | index is expressed relative to a position in the tree. Assume the current
+   | position is a block. The index of the block's first statement is [x, 0]
+   | where x is the position of the block relative to its parent. If the current
+   | context is a block that is the second child of its parent, the index for
+   | the block's third child is [1, 2]. In keeping with the equivalence of []
+   | and [0] for the root node, the index for the block's first child can be
+   | expressed as [x, 0] or just [x]. Based on these rules, its also the case
+   | that the first (bottom-left most statement) of the entire tree is []. This
+   | is useful for pointing to the start of the program without knowing the
+   | structure of the tree. The "real" index of the start will eventually be
+   | unfolded as [0, 0, ..., 0] as stepEval runs.
+
+   | Why do we need to pass the index relative to the parent to every stepEval
+   | method? It's true that it is not necessary at all to step through that
+   | function, but it is a compact way for a stepEval method to communicate when
+   | done with its done with a segment of the tree. For instance, if a stepEval
+   | is passed [4, 3] as a location and returns [5], its easy to see that we've
+   | finished with the subtree rooted at [4] and have moved on to the sibling of
+   | our tree (located at [5]). It could also work for each function to return a
+   | separate boolean to say "I'm done", but they are not significantly
+   | different.
+
+   | stepEvalBlock(block, [], ns) evaluates the first item of the block and
+   | returns the result of that expression along with the index of the next
+   | expression to evaluate. So does stepEvalBlock(block, [x], ns), and
+   | stepEvalBlock(block, [x, 0], ns). The next index can be either [x, 1] or
+   | [x+1] depending on the length of the block. If the block has zero length,
+   | any location argument will evaluate nothing, step out of the block, and
+   | return [x+1].
+
    |--------------------------------------------------
 */
 
@@ -57,8 +90,18 @@ function stepEvalTimes(args, loc, env) {
     throw new Error('Invalid "times" statement.');
   }
 
+  if (loc.length == 0) {
+    console.log("First stepEvalTimes call");
+    console.log("args", args);
+  }
+
   let result, childPath;
+
   let index = loc[0] || 0;
+
+  // upon entry, the loc is [] or [0]. The loc for the items in the times
+  // statement's block is [1, x] where 1 indicates that the block is this time
+  // statement's second child. x is the index into the block.
   if (loc.slice(1).length != 0) {
     childPath = loc.slice(1);
   } else {
@@ -76,16 +119,19 @@ function stepEvalTimes(args, loc, env) {
 
     [result, newLoc] = stepEvalAST(body, childPath, env);
 
+    console.log("FROM", childPath);
+    console.log("TO", newLoc);
+
     // if reached end of block
-    if (newLoc[0] >= index + 1) {
+    if (newLoc[0] > 1) {
       iter += 1;
 
-      if (iter > times) {
+      if (iter >= times) {
         // if passed through loop enough times, move outside of loop
         newLoc = [index + 1];
       } else {
         // otherwise, move to the beginning of loop
-        newLoc = [index, 0];
+        newLoc = [index, 1, 0];
       }
     } else {
       newLoc.unshift(index);
@@ -96,9 +142,9 @@ function stepEvalTimes(args, loc, env) {
     [result, newLoc] = stepEvalAST(body, childPath, env);
 
     // if reached end of block
-    if (newLoc[0] >= index + 1) {
+    if (newLoc[0] > 1) {
       // move to beginning of loop
-      newLoc = [index, 0];
+      newLoc = [index, 1, 0];
     } else {
       newLoc.unshift(index);
     }
