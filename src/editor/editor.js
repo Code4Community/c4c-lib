@@ -1,14 +1,16 @@
-import { EditorState, EditorView, basicSetup } from "@codemirror/basic-setup";
+import { EditorView, basicSetup } from "codemirror";
 import {
   LRLanguage,
   LanguageSupport,
   indentNodeProp,
   delimitedIndent,
   continuedIndent,
+  foldNodeProp,
+  foldInside
 } from "@codemirror/language";
-import { styleTags, tags as t } from "@codemirror/highlight";
 import { completeFromList } from "@codemirror/autocomplete";
 import { parser as ourParser } from "../lang.js";
+import { styleTags, tags as t} from "@lezer/highlight"
 
 const ourParserWithMetadata = ourParser.configure({
   props: [
@@ -22,35 +24,25 @@ const ourParserWithMetadata = ourParser.configure({
       Boolean: t.bool,
       Number: t.integer,
       String: t.string,
+      Comment: t.lineComment,
       Null: t.null,
-      comment: t.lineComment,
+      // comment: t.lineComment,
+      
       "( )": t.paren,
     }),
+    
     indentNodeProp.add({
       IfStatement: continuedIndent({ except: /^\s*(else|end)\b/ }),
       TimesStatement: continuedIndent({ except: /^\s*end\b/ }),
       Block: delimitedIndent({ closing: "end" }),
     }),
+    foldNodeProp.add({
+      Application: foldInside
+    })
   ],
 });
 
-const ourLanguage = LRLanguage.define({
-  parser: ourParserWithMetadata,
-  languageData: {
-    commentTokens: { line: "//" },
-    autocomplete: completeFromList([
-      { label: "if", type: "keyword" },
-      { label: "forever", type: "keyword" },
-      { label: "times", type: "keyword" },
-      { label: "else", type: "keyword" },
-      { label: "end", type: "keyword" },
-      { label: "function", type: "keyword" },
-    ]),
-    indentOnInput: /^\s*(else|end)$/,
-  },
-});
 
-const ourLanguageSupport = new LanguageSupport(ourLanguage);
 
 const defaultThemeObject = {
   "&": {
@@ -64,7 +56,25 @@ const defaultThemeObject = {
 
 var editor;
 
-function create(parentObject, themeObject, hidden) {
+function create(parentObject, themeObject, hidden = false, autocompleteFunctions = []) {
+  const ourLanguage = LRLanguage.define({
+    parser: ourParserWithMetadata,
+    languageData: {
+      commentTokens: { line: "//" },
+      autocomplete: completeFromList([
+        { label: "if", type: "keyword" },
+        { label: "forever", type: "keyword" },
+        { label: "times", type: "keyword" },
+        { label: "else", type: "keyword" },
+        { label: "end", type: "keyword" },
+        { label: "function", type: "keyword" },
+        ...autocompleteFunctions.map((f) => ({ label: f, type: "function" })),
+      ]),
+      indentOnInput: /^\s*(else|end)$/,
+    },
+  });
+  
+  const ourLanguageSupport = new LanguageSupport(ourLanguage);
   if (themeObject == null) {
     themeObject = defaultThemeObject;
   }
@@ -72,9 +82,7 @@ function create(parentObject, themeObject, hidden) {
   var theme = EditorView.theme(themeObject, { dark: false });
 
   editor = new EditorView({
-    state: EditorState.create({
-      extensions: [ourLanguageSupport, basicSetup, theme],
-    }),
+    extensions: [ourLanguageSupport, basicSetup, theme],
     parent: parentObject,
   });
 

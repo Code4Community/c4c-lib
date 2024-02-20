@@ -8,7 +8,7 @@ List { "(" expression* ")" }
 
 @tokens {
   space { std.whitespace+ }
-  comment { ";" ![\n]* }
+  Comment { "//" ![\n]* }
   Boolean { "true" | "false" }
   Symbol { $[a-zA-Z\-]+ }
   Number { std.digit+ }

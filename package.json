@@ -5,15 +5,25 @@
   "main": "src/index.js",
   "scripts": {
     "build": "webpack --config webpack.config.js",
-    "grammar": "node_modules/.bin/lezer-generator src/lang.grammar -o src/lang.js"
+    "grammar": "node_modules/.bin/lezer-generator src/lang.grammar -o src/lang.js",
+    "start": "webpack-dev-server --config test.config.js --open"
   },
   "dependencies": {
-    "@codemirror/basic-setup": "^0.19.0",
-    "@lezer/generator": "^0.15.2",
-    "@lezer/lr": "^0.15.4",
-    "bootstrap": "^5.2.3"
+    "@codemirror/autocomplete": "^6.12.0",
+    "@lezer/common": "^1.2.1",
+    "@lezer/generator": "^1.6.0",
+    "@lezer/lr": "^1.4.0",
+    "bootstrap": "^5.2.3",
+    "codemirror": "^6.0.1"
   },
   "devDependencies": {
-    "prettier": "2.4.1"
+    "@babel/preset-env": "^7.23.9",
+    "babel": "^6.23.0",
+    "babel-loader": "^9.1.3",
+    "clean-webpack-plugin": "^4.0.0",
+    "html-webpack-plugin": "^5.6.0",
+    "prettier": "2.4.1",
+    "webpack": "^5.90.3",
+    "webpack-cli": "^5.1.4"
   }
 }

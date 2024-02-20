@@ -1,6 +1,6 @@
 @top Program { Block }
 
-@skip { "," | space | comment }
+@skip { "," | space | Comment }
 
 Block { statement* }
 
@@ -39,7 +39,7 @@ function { kw<"function"> }
 
 @tokens {
   space { std.whitespace+ }
-  comment { "//" ![\n]* }
+  Comment { "//" ![\n]* }
   identifierChar { std.asciiLetter }
   word { identifierChar (identifierChar | std.digit)* }
   identifier { word }
