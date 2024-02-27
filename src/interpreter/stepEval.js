@@ -105,7 +105,10 @@ function stepEvalTimes(args, loc, env) {
   if (loc.slice(1).length != 0) {
     childPath = loc.slice(1);
   } else {
-    env.set("iter0", 0);
+    // Chec
+    let iters = env.get("iters") || []
+    iters.push(0)
+    env.set("iters", iters);
     childPath = [1, 0];
   }
 
@@ -115,7 +118,8 @@ function stepEvalTimes(args, loc, env) {
 
   if (args[0].type == "Number" || args[0].type == "Symbol") {
     const times = evalAST(args[0], env);
-    let iter = env.get("iter0");
+    let iters = env.get("iters");
+    let lastIndex = iters.length-1;
 
     [result, newLoc] = stepEvalAST(body, childPath, env);
 
@@ -124,11 +128,12 @@ function stepEvalTimes(args, loc, env) {
 
     // if reached end of block
     if (newLoc[0] > 1) {
-      iter += 1;
+      iters[lastIndex] += 1;
 
-      if (iter >= times) {
+      if (iters[lastIndex] >= times) {
         // if passed through loop enough times, move outside of loop
         newLoc = [index + 1];
+        iters.pop();
       } else {
         // otherwise, move to the beginning of loop
         newLoc = [index, 1, 0];
@@ -137,7 +142,7 @@ function stepEvalTimes(args, loc, env) {
       newLoc.unshift(index);
     }
 
-    env.set("iter0", iter);
+    env.set("iters", iters);
   } else if (args[0].type == "Forever") {
     [result, newLoc] = stepEvalAST(body, childPath, env);
 
