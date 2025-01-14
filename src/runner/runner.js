@@ -23,6 +23,7 @@ class ProgramRunner {
 
   reset() {
     this.location = [];
+    this.namespace = createNamespace();
   }
 
   step() {

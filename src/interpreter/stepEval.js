@@ -90,10 +90,10 @@ function stepEvalTimes(args, loc, env) {
     throw new Error('Invalid "times" statement.');
   }
 
-  if (loc.length == 0) {
-    console.log("First stepEvalTimes call");
-    console.log("args", args);
-  }
+  // if (loc.length == 0) {
+  //   console.log("First stepEvalTimes call");
+  //   console.log("args", args);
+  // }
 
   let result, childPath;
 
@@ -105,7 +105,13 @@ function stepEvalTimes(args, loc, env) {
   if (loc.slice(1).length != 0) {
     childPath = loc.slice(1);
   } else {
-    env.set("iter0", 0);
+    // Get the current stack of iters, or just the empty stack if it hasn't been set yet
+    let iters = env.get("__iters") || []
+    
+    // Add a 0 on the stack for the new times
+    iters.push(0);
+
+    env.set("__iters", iters);
     childPath = [1, 0];
   }
 
@@ -115,12 +121,16 @@ function stepEvalTimes(args, loc, env) {
 
   if (args[0].type == "Number" || args[0].type == "Symbol") {
     const times = evalAST(args[0], env);
-    let iter = env.get("iter0");
+    let iterStack = env.get("__iters");
+    let iter = iterStack.pop();
 
-    [result, newLoc] = stepEvalAST(body, childPath, env);
-
-    console.log("FROM", childPath);
-    console.log("TO", newLoc);
+    // If I don't put these brackets, it thinks I'm indexing iterStack.pop for some reason
+    // Not sure why, and I also couldn't just put result, newLoc = ...
+    {
+      [result, newLoc] = stepEvalAST(body, childPath, env);
+    }
+    // console.log("FROM", childPath);
+    // console.log("TO", newLoc);
 
     // if reached end of block
     if (newLoc[0] > 1) {
@@ -132,12 +142,14 @@ function stepEvalTimes(args, loc, env) {
       } else {
         // otherwise, move to the beginning of loop
         newLoc = [index, 1, 0];
+        iterStack.push(iter);
       }
     } else {
       newLoc.unshift(index);
+      iterStack.push(iter);
     }
 
-    env.set("iter0", iter);
+    env.set("__iters", iterStack);
   } else if (args[0].type == "Forever") {
     [result, newLoc] = stepEvalAST(body, childPath, env);
 
