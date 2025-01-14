@@ -22,7 +22,7 @@ function checkBlock(args, env) {
 }
 
 function checkCall(args, env) {
-  let evaluatedChildren = args.map((c) => evalAST(c, env));
+  let evaluatedChildren = args.map((c) => checkAST(c, env));
   let func = evaluatedChildren[0];
   return null;
 }
@@ -41,9 +41,9 @@ function checkTimes(args, env) {
   if (args[0].type == "Number" || args[0].type == "Symbol") {
     const times = evalAST(args[0], env);
     // only eval body once
-    result = evalAST(body, env);
+    result = checkAST(body, env);
   } else if (args[0].type == "Forever") {
-    evalAST(body, env);
+    result = checkAST(body, env);
   } else {
     throw new Error('Invalid "times" statement.');
   }
@@ -56,13 +56,18 @@ function checkIf(args, env) {
     throw new Error('Invalid "if" statement.');
   }
 
-  let cond = evalAST(args[0], env);
+  let cond = checkAST(args[0], env);
   let thenExp = args[1];
-  let elseExp = args[2];
 
-  // eval both the and else
-  evalAST(thenExp, env);
-  return evalAST(elseExp, env);
+  //else block exists
+  if(args.length === 3){
+    // eval both then and else
+    let elseExp = args[2];
+    checkAST(thenExp, env);
+    return checkAST(elseExp, env);
+  }else{
+    return checkAST(thenExp, env);
+  }
 }
 
 function checkAST(ast, env) {
