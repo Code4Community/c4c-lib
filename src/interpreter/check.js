@@ -22,7 +22,7 @@ function checkBlock(args, env) {
 }
 
 function checkCall(args, env) {
-  let evaluatedChildren = args.map((c) => evalAST(c, env));
+  let evaluatedChildren = args.map((c) => checkAST(c, env));
   let func = evaluatedChildren[0];
   return null;
 }
@@ -56,7 +56,7 @@ function checkIf(args, env) {
     throw new Error('Invalid "if" statement.');
   }
 
-  let cond = evalAST(args[0], env);
+  let cond = checkAST(args[0], env);
   let thenExp = args[1];
 
   //else block exists
