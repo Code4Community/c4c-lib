@@ -58,11 +58,16 @@ function checkIf(args, env) {
 
   let cond = evalAST(args[0], env);
   let thenExp = args[1];
-  let elseExp = args[2];
 
-  // eval both the and else
-  checkAST(thenExp, env);
-  return checkAST(elseExp, env);
+  //else block exists
+  if(args.length === 3){
+    // eval both then and else
+    let elseExp = args[2];
+    checkAST(thenExp, env);
+    return checkAST(elseExp, env);
+  }else{
+    return checkAST(thenExp, env);
+  }
 }
 
 function checkAST(ast, env) {
