@@ -41,9 +41,9 @@ function checkTimes(args, env) {
   if (args[0].type == "Number" || args[0].type == "Symbol") {
     const times = evalAST(args[0], env);
     // only eval body once
-    result = evalAST(body, env);
+    result = checkAST(body, env);
   } else if (args[0].type == "Forever") {
-    evalAST(body, env);
+    result = checkAST(body, env);
   } else {
     throw new Error('Invalid "times" statement.');
   }
@@ -61,8 +61,8 @@ function checkIf(args, env) {
   let elseExp = args[2];
 
   // eval both the and else
-  evalAST(thenExp, env);
-  return evalAST(elseExp, env);
+  checkAST(thenExp, env);
+  return checkAST(elseExp, env);
 }
 
 function checkAST(ast, env) {
