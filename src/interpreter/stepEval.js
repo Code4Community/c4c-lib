@@ -105,10 +105,11 @@ function stepEvalTimes(args, loc, env) {
   if (loc.slice(1).length != 0) {
     childPath = loc.slice(1);
   } else {
-    // Chec
-    let iters = env.get("iters") || []
-    iters.push(0)
-    env.set("iters", iters);
+    let itersStack = env.get("iters");
+    if (itersStack === undefined || itersStack === null)
+      itersStack = [];
+    itersStack.push(0)
+    env.set("iters", itersStack);
     childPath = [1, 0];
   }
 
@@ -126,23 +127,38 @@ function stepEvalTimes(args, loc, env) {
     console.log("FROM", childPath);
     console.log("TO", newLoc);
 
-    // if reached end of block
-    if (newLoc[0] > 1) {
-      iters[lastIndex] += 1;
+    
+    while (true) {
+      console.log(newLoc);
+      // if reached end of block
+      if (newLoc[0] > 1) {
+        iters[lastIndex]++;
 
-      if (iters[lastIndex] >= times) {
-        // if passed through loop enough times, move outside of loop
-        newLoc = [index + 1];
-        iters.pop();
+        if (iters[lastIndex] >= times) {
+          // if passed through loop enough times, move outside of loop
+          newLoc = [index + 1];
+          // For some reason, popping doesn't work, so we need to set iters to something new
+          console.log(iters)
+          iters = iters.slice(0, lastIndex);
+          lastIndex--;
+          console.log(iters)
+
+          
+        } else {
+          // otherwise, move to the beginning of loop
+          newLoc = [index, 1, 0];
+          break;
+        }
       } else {
-        // otherwise, move to the beginning of loop
-        newLoc = [index, 1, 0];
+        newLoc.unshift(index);
+        iters.push(0);
+        lastIndex++;
+        break;
       }
-    } else {
-      newLoc.unshift(index);
     }
-
     env.set("iters", iters);
+    
+    
   } else if (args[0].type == "Forever") {
     [result, newLoc] = stepEvalAST(body, childPath, env);
 
